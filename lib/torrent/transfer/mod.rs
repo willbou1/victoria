@@ -10,7 +10,6 @@ use tokio::{
 use std::{
     path::{Path},
     collections::{HashMap, VecDeque},
-    time::Duration,
     io::SeekFrom,
 };
 use tracing::{info, warn, debug, trace};
@@ -485,6 +484,16 @@ impl Transfer {
 
         self.uploaded += uploaded_this_second;
         self.progress_tx.send_modify(|p| p.transfer = Some(TransferProgress {
+            files: self.metadata.files.iter()
+                .map(|f| FileProgress {
+                    relative_path: if f.path.parent().is_some() {
+                        f.path.iter().skip(1).collect()
+                    } else {
+                        f.path.clone()
+                    }.to_string_lossy().into_owned(),
+                    size: f.length,
+                })
+                .collect(),
             size: self.metadata.length,
             down_speed: downloaded_this_second,
             up_speed: uploaded_this_second,

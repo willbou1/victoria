@@ -13,6 +13,7 @@ pub struct PieceProgress {
 
 #[derive(Clone)]
 pub struct TransferProgress {
+    pub files: Vec<FileProgress>,
     pub down_speed: usize,
     pub up_speed: usize,
     pub downloaded: usize,
@@ -20,6 +21,13 @@ pub struct TransferProgress {
     pub size: usize,
     pub piece_bitfield: Bitfield,
     pub active_pieces: Vec<PieceProgress>,
+}
+
+#[derive(Clone)]
+pub struct FileProgress {
+    pub relative_path: String,
+    pub size: usize,
+    // TODO priority
 }
 
 #[derive(Clone)]

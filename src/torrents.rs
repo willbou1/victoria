@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::{
     path::PathBuf,
     time::Duration,
+    io::{stdout, Write},
 };
 use tokio::{
     signal,
@@ -10,8 +11,9 @@ use tokio::{
 };
 use crossterm::{
     execute,
-    cursor::MoveTo,
-    terminal::{Clear, ClearType, self},
+    cursor::{MoveTo, Show, Hide},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, self},
+    event::{Event, KeyCode, KeyModifiers, self},
 };
 
 use libvictoria::{
@@ -20,6 +22,92 @@ use libvictoria::{
     types::*,
 };
 use super::table::*;
+
+impl Row for FileProgress {
+    fn columns() -> &'static [Column<Self>] {
+        &[
+            Column {
+                header: "Name",
+                alignment: Alignment::Left,
+                max_width: None,
+                flex: None,
+                total: None,
+            },
+            Column {
+                header: "Size",
+                alignment: Alignment::Right,
+                max_width: None,
+                flex: None,
+                total: None,
+            },
+        ]
+    }
+    fn display_column(&self, index: usize, width: Option<usize>) -> String {
+        match index {
+            0 => self.relative_path.to_string(),
+            1 => pretty_size(self.size),
+            _ => unreachable!(),
+        } 
+    }
+    fn display_sub(&self, width: usize) -> String {
+        String::new()
+    }
+}
+
+impl Row for PieceProgress {
+    fn columns() -> &'static [Column<Self>] {
+        &[
+            Column {
+                header: "Idx",
+                alignment: Alignment::Left,
+                max_width: None,
+                flex: None,
+                total: None,
+            },
+            Column {
+                header: "Blocks",
+                alignment: Alignment::Left,
+                max_width: None,
+                flex: Some(1),
+                total: None,
+            },
+            Column {
+                header: "%",
+                alignment: Alignment::Right,
+                max_width: None,
+                flex: None,
+                total: None,
+            },
+            Column {
+                header: "Num",
+                alignment: Alignment::Right,
+                max_width: None,
+                flex: None,
+                total: None,
+            },
+            Column {
+                header: "Tot",
+                alignment: Alignment::Right,
+                max_width: None,
+                flex: None,
+                total: None,
+            },
+        ]
+    }
+    fn display_column(&self, index: usize, width: Option<usize>) -> String {
+        match index {
+            0 => self.index.to_string(),
+            1 => format!("{:WIDTH$}", self.block_bitfield, WIDTH = width.unwrap()),
+            2 => format!("{:.2}", self.num_obtained_blocks as f64 * 100. / self.num_blocks as f64),
+            3 => self.num_obtained_blocks.to_string(),
+            4 => self.num_blocks.to_string(),
+            _ => unreachable!(),
+        } 
+    }
+    fn display_sub(&self, width: usize) -> String {
+        String::new()
+    }
+}
 
 impl Row for Progress {
     fn columns() -> &'static [Column<Self>] {
@@ -79,11 +167,18 @@ impl Row for Progress {
                 header: "Name",
                 alignment: Alignment::Left,
                 max_width: None,
-                flex: Some(2),
+                flex: Some(3),
                 total: None,
             },
             Column {
-                header: "Piece bitfield",
+                header: "Size",
+                alignment: Alignment::Right,
+                max_width: None,
+                flex: None,
+                total: None,
+            },
+            Column {
+                header: "Pieces",
                 alignment: Alignment::Left,
                 max_width: None,
                 flex: Some(1),
@@ -128,10 +223,14 @@ impl Row for Progress {
                     self.display_name.to_string()
                 }
             },
-            6 => self.transfer.as_ref().map(
+            6 => self.transfer
+                .as_ref()
+                .map(|t| pretty_size(t.size))
+                .unwrap_or_default().to_string(),
+            7 => self.transfer.as_ref().map(
                 |t| format!("{:WIDTH$}", t.piece_bitfield, WIDTH = width.unwrap())
             ).unwrap_or(String::new()),
-            7 => format!(
+            8 => format!(
                 "{:.2}",
                 self.transfer
                     .as_ref()
@@ -140,6 +239,17 @@ impl Row for Progress {
             ),
             _ => unreachable!(),
         }
+    }
+
+    fn display_sub(&self, width: usize) -> String {
+        let mut sub = String::new();
+        if let Some(transfer) = &self.transfer {
+            let mut active_table = Table::new(1, false, false);
+            sub.extend(active_table.render(&transfer.active_pieces, 40).chars());
+            let mut files_table = Table::new(1, false, false);
+            sub.extend(files_table.render(&transfer.files, 50).chars());
+        }
+        sub
     }
 }
 
@@ -175,61 +285,60 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
     }
 
     let mut interval = tokio::time::interval(Duration::from_millis(100));
-    let ctrl_c = signal::ctrl_c();
-    tokio::pin!(ctrl_c);
-    let table = Table::<Progress>::new(2);
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {
-                let rows: Vec<Progress> = torrent_tasks
-                .iter()
-                .map(|tt| tt.rx.borrow().clone())
-                .collect();
-                let frame = table.render(&rows, terminal::size()?.0.into());
+    let mut table = Table::<Progress>::new(2, true, true);
+    let mut out = stdout();
+    execute!(
+        out,
+        EnterAlternateScreen,
+        Hide,
+    )?;
+    terminal::enable_raw_mode()?;
+    'main: loop {
+        interval.tick().await;
+        while event::poll(Duration::ZERO)? {
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
 
-
-                //for torrent_task in &torrent_tasks {
-                //    let progress = torrent_task.rx.borrow();
-
-                //    frame.push_str(&format!(
-                //        "{}\n",
-                //        progress.display_column(0, None),
-                //    ));
-
-                //    if let Some(transfer) = &progress.transfer {
-                //        let mut i = 0;
-                //        for piece in &transfer.active_pieces {
-                //            frame.push_str(&format!("{:<4} {:30} {:>5.2}% {:>11}",
-                //                piece.index,
-                //                piece.block_bitfield,
-                //                piece.num_obtained_blocks as f64 * 100. / piece.num_blocks as f64,
-                //                format!("({}/{})", piece.num_obtained_blocks, piece.num_blocks),
-                //            ));
-                //            i += 1;
-                //            frame.push_str(&format!("{}",
-                //                if i % 2 == 0 || i == transfer.active_pieces.len() {"\n"}
-                //                else {"   │   "}
-                //            ));
-                //        }
-                //    }
-                //}
-                execute!(
-                    std::io::stdout(),
-                    Clear(ClearType::All),
-                    MoveTo(0, 0),
-                )?;
-                print!("{frame}");
-            }
-
-            _ = &mut ctrl_c => {
-                break;
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'main,
+                KeyCode::Char('q') => break 'main,
+                KeyCode::Up => table.up(),
+                KeyCode::Down => table.down(),
+                KeyCode::Tab => table.toggle(),
+                _ => (),
             }
         }
+
+        let rows: Vec<Progress> = torrent_tasks.iter()
+            .map(|tt| tt.rx.borrow().clone())
+            .collect();
+        let (width, height) = terminal::size()?;
+        let mut frame = table.render(&rows, width.into()).to_string();
+        for _ in 0..(height as usize - frame.lines().count() - 1) {
+            frame.extend(std::iter::repeat_n(' ', width.into()));
+            frame.push('\r');
+            frame.push('\n');
+        }
+
+        execute!(
+            out,
+            MoveTo(0, 0),
+        )?;
+        write!(out, "{frame}")?;
+        out.flush()?;
     }
     
     for torrent_task in torrent_tasks {
         torrent_task.tx.send(Command::Stop).await?;
         torrent_task.task.await?;
     }
+
+    execute!(
+        out,
+        Show,
+        LeaveAlternateScreen,
+    )?;
+    terminal::disable_raw_mode()?;
     Ok(())
 }

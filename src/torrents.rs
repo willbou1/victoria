@@ -5,7 +5,6 @@ use std::{
     io::{stdout, Write},
 };
 use tokio::{
-    signal,
     sync::{mpsc, watch},
     task::JoinHandle,
 };
@@ -13,7 +12,7 @@ use crossterm::{
     execute,
     cursor::{MoveTo, Show, Hide},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, self},
-    event::{Event, KeyCode, KeyModifiers, self},
+    event::{Event, KeyCode, KeyModifiers, EnableMouseCapture, DisableMouseCapture, self},
 };
 
 use libvictoria::{
@@ -25,23 +24,20 @@ use super::table::*;
 
 impl Row for FileProgress {
     fn columns() -> &'static [Column<Self>] {
+        use Alignment::*;
         &[
             Column {
                 header: "Name",
-                alignment: Alignment::Left,
-                max_width: None,
-                flex: None,
-                total: None,
+                ..Column::DEFAULT
             },
             Column {
                 header: "Size",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
-                total: None,
+                alignment: Right,
+                ..Column::DEFAULT
             },
         ]
     }
+
     fn display_column(&self, index: usize, width: Option<usize>) -> String {
         match index {
             0 => self.relative_path.to_string(),
@@ -49,6 +45,7 @@ impl Row for FileProgress {
             _ => unreachable!(),
         } 
     }
+
     fn display_sub(&self, width: usize) -> String {
         String::new()
     }
@@ -56,44 +53,35 @@ impl Row for FileProgress {
 
 impl Row for PieceProgress {
     fn columns() -> &'static [Column<Self>] {
+        use Alignment::*;
         &[
             Column {
                 header: "Idx",
-                alignment: Alignment::Left,
-                max_width: None,
-                flex: None,
-                total: None,
+                ..Column::DEFAULT
             },
             Column {
                 header: "Blocks",
-                alignment: Alignment::Left,
-                max_width: None,
                 flex: Some(1),
-                total: None,
+                ..Column::DEFAULT
             },
             Column {
                 header: "%",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
-                total: None,
+                alignment: Right,
+                ..Column::DEFAULT
             },
             Column {
                 header: "Num",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
-                total: None,
+                alignment: Right,
+                ..Column::DEFAULT
             },
             Column {
                 header: "Tot",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
-                total: None,
+                alignment: Right,
+                ..Column::DEFAULT
             },
         ]
     }
+
     fn display_column(&self, index: usize, width: Option<usize>) -> String {
         match index {
             0 => self.index.to_string(),
@@ -104,6 +92,7 @@ impl Row for PieceProgress {
             _ => unreachable!(),
         } 
     }
+
     fn display_sub(&self, width: usize) -> String {
         String::new()
     }
@@ -111,131 +100,90 @@ impl Row for PieceProgress {
 
 impl Row for Progress {
     fn columns() -> &'static [Column<Self>] {
+        use Alignment::*;
         &[
-            Column {
-                header: "",
-                alignment: Alignment::Left,
-                max_width: None,
-                flex: None,
-                total: None,
-            },
+            Column::DEFAULT,
             Column {
                 header: "Con",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
+                alignment: Right,
                 total: Some(|rows| {
                     let total: usize = rows.iter()
                         .map(|r| r.num_connected_peers).sum();
                     format!("{total}")
                 }),
-            },
-            Column {
-                header: "Dis",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
-                total: Some(|rows| {
-                    let total: usize = rows.iter()
-                        .map(|r| r.num_discovery_attempts).sum();
-                    format!("{total}")
-                }),
+                ..Column::DEFAULT
             },
             Column {
                 header: "Down",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
+                alignment: Right,
                 total: Some(|rows| {
                     let total: usize = rows.iter()
                         .map(|r| r.transfer.as_ref().map_or(0, |t| t.down_speed)).sum();
                     format!("{}", pretty_size(total))
                 }),
+                ..Column::DEFAULT
             },
             Column {
                 header: "Up",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
+                alignment: Right,
                 total: Some(|rows| {
                     let total: usize = rows.iter()
                         .map(|r| r.transfer.as_ref().map_or(0, |t| t.up_speed)).sum();
                     format!("{}", pretty_size(total))
                 }),
+                ..Column::DEFAULT
             },
             Column {
                 header: "Name",
-                alignment: Alignment::Left,
-                max_width: None,
                 flex: Some(3),
-                total: None,
+                ..Column::DEFAULT
             },
             Column {
                 header: "Size",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
-                total: None,
+                alignment: Right,
+                ..Column::DEFAULT
             },
             Column {
                 header: "Pieces",
-                alignment: Alignment::Left,
-                max_width: None,
                 flex: Some(1),
-                total: None,
+                ..Column::DEFAULT
             },
             Column {
                 header: "%",
-                alignment: Alignment::Right,
-                max_width: None,
-                flex: None,
-                total: None,
+                alignment: Right,
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "ETA",
+                alignment: Right,
+                ..Column::DEFAULT
             },
         ]
     }
 
     fn display_column(&self, index: usize, width: Option<usize>) -> String {
+        let transfer = self.transfer.as_ref();
         match index {
-            0 => {
-                if let Some(bitfield) = &self.metadata_bitfield
-                    && bitfield.len() != 0
-                    && bitfield.len() == bitfield.num_set()
-                {
-                    "⇆".into()
-                } else {
-                    "ℹ".into()
-                }
-            }
+            0 => String::from("▶"),
             1 => self.num_connected_peers.to_string(),
-            2 => self.num_discovery_attempts.to_string(),
-            3 => self.transfer
-                .as_ref()
-                .map(|t| pretty_size(t.down_speed))
-                .unwrap_or_default().to_string(),
-            4 => self.transfer
-                .as_ref()
-                .map(|t| pretty_size(t.up_speed))
-                .unwrap_or_default().to_string(),
-            5 => {
+            2 => transfer.map_or(String::new(), |t| pretty_size(t.down_speed)),
+            3 => transfer.map_or(String::new(), |t| pretty_size(t.up_speed)),
+            4 => {
                 if let Some(width) = width {
                     self.display_name.chars().take(width - 1).chain(['…']).collect()
                 } else {
                     self.display_name.to_string()
                 }
             },
-            6 => self.transfer
-                .as_ref()
-                .map(|t| pretty_size(t.size))
-                .unwrap_or_default().to_string(),
-            7 => self.transfer.as_ref().map(
+            5 => transfer.map_or(String::new(), |t| pretty_size(t.size)),
+            6 => transfer.map_or(
+                format!("{:WIDTH$}", self.metadata_bitfield, WIDTH = width.unwrap()),
                 |t| format!("{:WIDTH$}", t.piece_bitfield, WIDTH = width.unwrap())
-            ).unwrap_or(String::new()),
-            8 => format!(
-                "{:.2}",
-                self.transfer
-                    .as_ref()
-                    .map(|t| t.downloaded as f64 * 100. / t.size as f64)
-                    .unwrap_or(0.)
+            ),
+            7 => format!("{:.2}", transfer.map_or(0., |t| t.percentage())),
+            8 => transfer.map_or(
+                String::new(),
+                |t| t.eta().map_or(String::new(), |e| pretty_duration(e))
             ),
             _ => unreachable!(),
         }
@@ -257,6 +205,28 @@ struct TorrentTask {
     task: JoinHandle<()>,
     tx: mpsc::Sender<Command>,
     rx: watch::Receiver<Progress>,
+}
+
+pub fn prepare_terminal() -> Result<()> {
+    execute!(
+        stdout(),
+        EnterAlternateScreen,
+        Hide,
+        EnableMouseCapture,
+    )?;
+    terminal::enable_raw_mode()?;
+    Ok(())
+}
+
+pub fn restore_terminal() -> Result<()> {
+    execute!(
+        stdout(),
+        Show,
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+    )?;
+    terminal::disable_raw_mode()?;
+    Ok(()) 
 }
 
 pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
@@ -286,27 +256,33 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
 
     let mut interval = tokio::time::interval(Duration::from_millis(100));
     let mut table = Table::<Progress>::new(2, true, true);
+    let mut vertical_position: usize = 0;
+
+    prepare_terminal()?;
     let mut out = stdout();
-    execute!(
-        out,
-        EnterAlternateScreen,
-        Hide,
-    )?;
-    terminal::enable_raw_mode()?;
     'main: loop {
         interval.tick().await;
         while event::poll(Duration::ZERO)? {
-            let Event::Key(key) = event::read()? else {
-                continue;
-            };
-
-            match key.code {
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'main,
-                KeyCode::Char('q') => break 'main,
-                KeyCode::Up => table.up(),
-                KeyCode::Down => table.down(),
-                KeyCode::Tab => table.toggle(),
-                _ => (),
+            match event::read()? {
+                Event::Key(key) => {
+                    match key.code {
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'main,
+                        KeyCode::Char('q') => break 'main,
+                        KeyCode::Up | KeyCode::Char('k') => table.up(),
+                        KeyCode::Down | KeyCode::Char('j') => table.down(),
+                        KeyCode::Tab | KeyCode::Char(' ') => table.toggle(),
+                        _ => (),
+                    }
+                }
+                Event::Mouse(mouse) => {
+                    match mouse.kind {
+                        event::MouseEventKind::ScrollDown => vertical_position += 3,
+                        event::MouseEventKind::ScrollUp =>
+                            vertical_position = vertical_position.saturating_sub(3),
+                        _ => (),
+                    }
+                }
+                _ => continue,
             }
         }
 
@@ -314,11 +290,19 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
             .map(|tt| tt.rx.borrow().clone())
             .collect();
         let (width, height) = terminal::size()?;
-        let mut frame = table.render(&rows, width.into()).to_string();
-        for _ in 0..(height as usize - frame.lines().count() - 1) {
+
+        let mut frame = table.render(&rows, width.into())
+            .lines().skip(vertical_position)
+            .take(height as usize)
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let fill = height.saturating_sub(frame.lines().count() as u16);
+        for l in 0..fill {
             frame.extend(std::iter::repeat_n(' ', width.into()));
-            frame.push('\r');
-            frame.push('\n');
+            if l < fill - 1 {
+                frame.push('\r');
+                frame.push('\n');
+            }
         }
 
         execute!(
@@ -334,11 +318,5 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
         torrent_task.task.await?;
     }
 
-    execute!(
-        out,
-        Show,
-        LeaveAlternateScreen,
-    )?;
-    terminal::disable_raw_mode()?;
-    Ok(())
+    restore_terminal()
 }

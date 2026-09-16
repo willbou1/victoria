@@ -1,3 +1,7 @@
+use std::{
+    time::Duration,
+};
+
 use crate::{
     types::*,
     bitfield::Bitfield,
@@ -23,6 +27,21 @@ pub struct TransferProgress {
     pub active_pieces: Vec<PieceProgress>,
 }
 
+impl TransferProgress {
+    pub fn percentage(&self) -> f32 {
+        self.downloaded as f32 * 100. / self.size as f32
+    }
+
+    pub fn eta(&self) -> Option<Duration> {
+        if self.down_speed == 0 {
+            return None;
+        }
+        Some(Duration::from_secs(
+            (self.size - self.downloaded) as u64 / self.down_speed as u64
+        ))
+    }
+}
+
 #[derive(Clone)]
 pub struct FileProgress {
     pub relative_path: String,
@@ -38,7 +57,7 @@ pub struct Progress {
     pub display_name: String,
     pub metadata_down_speed: usize,
     pub metadata_up_speed: usize,
-    pub metadata_bitfield: Option<Bitfield>,
+    pub metadata_bitfield: Bitfield,
     pub transfer: Option<TransferProgress>,
 }
 

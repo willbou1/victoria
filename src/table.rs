@@ -51,6 +51,16 @@ pub struct Column<R: Row> {
     pub total: Option<fn(&[R]) -> String>,
 }
 
+impl<R: Row> Column<R> {
+    pub const DEFAULT: Self = Self {
+        header: "",
+        alignment: Alignment::Left,
+        max_width: None,
+        flex: None,
+        total: None,
+    };
+}
+
 pub trait Row {
     fn columns() -> &'static [Column<Self>] where Self: Sized;
     fn display_column(&self, index: usize, width: Option<usize>) -> String;

@@ -125,6 +125,7 @@ impl Torrent {
             .spawn(tracker_manager.run().instrument(span.clone()))
             .unwrap();
 
+        let metadata_piece = Piece::new(None, METADATA_BLOCK_SIZE, 0, info_hash, false);
         let (progress_tx, progress_rx) = watch::channel(Progress {
             display_name,
             num_peers: 0,
@@ -133,7 +134,7 @@ impl Torrent {
             transfer: None,
             metadata_down_speed: 0,
             metadata_up_speed: 0,
-            metadata_bitfield: None,
+            metadata_bitfield: metadata_piece.to_bitfield(),
         });
         let (command_tx, command_rx) = mpsc::channel(10);
 
@@ -142,11 +143,11 @@ impl Torrent {
             metainfo: Metainfo::from_magnet(info_hash, trackers),
             peer_tx: tx,
             tracker_tx,
+            metadata: metadata_piece,
             rx,
             span: span.clone(),
             client_id,
             transfer: None,
-            metadata: Piece::new(None, METADATA_BLOCK_SIZE, 0, info_hash, false),
             discovery_attemps: Vec::new(),
 
             progress_rx,
@@ -194,13 +195,14 @@ impl Torrent {
             .spawn(trackers.run().instrument(span.clone()))
             .unwrap();
 
+        let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, metainfo.info_hash, &metadata_bytes);
         let (progress_tx, progress_rx) = watch::channel(Progress {
             display_name: metadata.name.clone(),
             num_peers: 0,
             num_connected_peers: 0,
             num_discovery_attempts: 0,
             transfer: None,
-            metadata_bitfield: None,
+            metadata_bitfield: metadata_piece.to_bitfield(),
             metadata_down_speed: 0,
             metadata_up_speed: 0,
         });
@@ -211,10 +213,10 @@ impl Torrent {
             peer_tx: tx,
             transfer: Some(Transfer::new(metadata, tracker_tx.clone(), progress_tx.clone()).await?),
             tracker_tx,
+            metadata: metadata_piece,
             rx,
             span: span.clone(),
             client_id,
-            metadata: Piece::from_slice(METADATA_BLOCK_SIZE, metainfo.info_hash, &metadata_bytes),
             discovery_attemps: Vec::new(),
             metainfo,
 
@@ -315,7 +317,6 @@ impl Torrent {
         }
 
         self.progress_tx.send_modify(|p| {
-            p.metadata_bitfield = Some(self.metadata.to_bitfield());
             p.metadata_down_speed = METADATA_BLOCK_SIZE * downloaded_metadata_this_second;
             p.metadata_up_speed = METADATA_BLOCK_SIZE * uploaded_metadata_this_second;
         });
@@ -467,6 +468,9 @@ impl Torrent {
                     } else {
                         self.dispatch_metadata_request().await?;
                     }
+                    self.progress_tx.send_modify(|p| {
+                        p.metadata_bitfield = self.metadata.to_bitfield();
+                    });
                 }
             },
             MetadataMessage::Reject { index } => {

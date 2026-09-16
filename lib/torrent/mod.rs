@@ -135,6 +135,7 @@ impl Torrent {
             metadata_down_speed: 0,
             metadata_up_speed: 0,
             metadata_bitfield: metadata_piece.to_bitfield(),
+            peers: HashMap::new(),
         });
         let (command_tx, command_rx) = mpsc::channel(10);
 
@@ -205,6 +206,7 @@ impl Torrent {
             metadata_bitfield: metadata_piece.to_bitfield(),
             metadata_down_speed: 0,
             metadata_up_speed: 0,
+            peers: HashMap::new(),
         });
         let (command_tx, command_rx) = mpsc::channel(10);
 
@@ -291,26 +293,7 @@ impl Torrent {
 
         let mut uploaded_metadata_this_second = 0;
         let mut downloaded_metadata_this_second = 0;
-        status.push_str("\n    Discovered\n");
         for (id, peer) in self.peers.iter_mut() {
-            status.push_str(
-                &format!("        {} | {} | {}{}{}{} | {}\n            {}\n",
-                    match &peer.state {
-                        PeerState::Connected { .. } => "⬤",
-                        PeerState::Disconnected { reconnecting, .. } =>
-                        if *reconnecting {"⟳"} else {"◯"},
-                    },
-                    id,
-                    if peer.supports_fast {"F"} else {" "},
-                    if peer.supports_pex {"P"} else {" "},
-                    if peer.supports_metadata {"M"} else {" "},
-                    if peer.supports_dht {"D"} else {" "},
-                    peer.client.as_ref().unwrap_or(&String::new()),
-                    peer.info,
-                ));
-            if let PeerState::Disconnected { reason, .. } = &peer.state {
-                status.push_str(&format!("            {reason}\n"));
-            }
             uploaded_metadata_this_second += peer.uploaded_metadata_this_second();
             downloaded_metadata_this_second += peer.downloaded_metadata_this_second();
             peer.reset_statistics();
@@ -360,7 +343,7 @@ impl Torrent {
         let tx = self.peer_tx.clone();
         let peer_info = info.clone();
         let info_hash = self.metainfo.info_hash.clone();
-        let client_id = self.client_id.clone();
+        let client_id = self.client_id;
         tokio::task::Builder::new()
             .name(if known_id.is_some() {
                 "Reconnection"
@@ -409,7 +392,7 @@ impl Torrent {
                     );
                     let _enter = span.enter();
                     debug!("Requested metadata {index}");
-                    self.metadata.download(index, peer_id.clone());
+                    self.metadata.download(index, *peer_id);
                     peer.request_metadata(index).await;
                 } else {
                     break;
@@ -457,7 +440,7 @@ impl Torrent {
                         for (peer_id, peer) in self.peers.iter_mut() {
                             if let PeerState::Connected { tx, initial_transfer_messages, .. } = &mut peer.state {
                                 transfer.add_connection(
-                                    peer_id.clone(),
+                                    *peer_id,
                                     tx.clone(),
                                     peer.supports_fast,
                                     Some(initial_transfer_messages),
@@ -477,7 +460,7 @@ impl Torrent {
                 if self.transfer.is_none() {
                     let who_downloading = self.metadata.who_downloading(index);
                     if let Some(who) = who_downloading && who == peer_id {
-                        self.metadata.reject(index, peer_id.clone());
+                        self.metadata.reject(index, *peer_id);
                         self.peers.entry(*peer_id)
                             .and_modify(|p| p.reject_metadata());
                         self.dispatch_metadata_request().await?;
@@ -493,6 +476,21 @@ impl Torrent {
     fn update_progress(&self) {
         self.progress_tx.send_modify(|p| {
             p.num_peers = self.peers.len();
+            for (id, peer) in &self.peers {
+                let peer_progress = p.peers.entry(*id).or_insert(PeerProgress {
+                    connection: None,
+                    client: None,
+                    supports_dht: false,
+                    supports_fast: false,
+                    supports_metadata: false,
+                    supports_pex: false,
+                });
+                peer_progress.client = peer.client.clone();
+                peer_progress.supports_dht = peer.supports_dht;
+                peer_progress.supports_fast = peer.supports_fast;
+                peer_progress.supports_metadata = peer.supports_metadata;
+                peer_progress.supports_pex = peer.supports_pex;
+            }
             p.num_connected_peers = self.peers.iter()
                 .filter(|p| p.1.state.is_connected()).count();
             p.num_discovery_attempts = self.discovery_attemps.len();

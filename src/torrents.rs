@@ -22,7 +22,73 @@ use libvictoria::{
 };
 use super::table::*;
 
-impl Row for FileProgress {
+impl Row for (&PeerId, &PeerProgress) {
+    fn columns() -> &'static [Column<Self>] {
+        use Alignment::*;
+        &[
+            Column::DEFAULT,
+            Column {
+                header: "Id",
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "F P M D",
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "Client",
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "Down",
+                alignment: Right,
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "Up",
+                alignment: Right,
+                ..Column::DEFAULT
+            },
+        ]
+    }
+
+    fn display_column(&self, index: usize, width: Option<usize>) -> String {
+        let (id, peer) = self;
+        match index {
+            0 => String::new(),
+            1 => {
+                let string_id = id.to_string();
+                format!("{}..{}", &string_id[..8], &string_id[32..40])
+            }
+            2 => [
+                peer.supports_fast,
+                peer.supports_pex,
+                peer.supports_metadata,
+                peer.supports_dht
+            ].map(|ext| if ext {"■"} else {"□"}).join(" "),
+            3 => peer.client.clone().unwrap_or(String::new()),
+            4 => peer.connection.as_ref().map_or(
+                String::new(),
+                |c| pretty_size(c.down_speed)
+            ),
+            5 => peer.connection.as_ref().map_or(
+                String::new(),
+                |c| pretty_size(c.up_speed)
+            ),
+            _ => unreachable!(),
+        } 
+    }
+
+    fn sub_sections() -> &'static [&'static str] {
+        &[]
+    }
+
+    fn display_sub(&self, width: usize) -> String {
+        String::new()
+    }
+}
+
+impl Row for FileInfo {
     fn columns() -> &'static [Column<Self>] {
         use Alignment::*;
         &[
@@ -44,6 +110,10 @@ impl Row for FileProgress {
             1 => pretty_size(self.size),
             _ => unreachable!(),
         } 
+    }
+
+    fn sub_sections() -> &'static [&'static str] {
+        &[]
     }
 
     fn display_sub(&self, width: usize) -> String {
@@ -91,6 +161,10 @@ impl Row for PieceProgress {
             4 => self.num_blocks.to_string(),
             _ => unreachable!(),
         } 
+    }
+
+    fn sub_sections() -> &'static [&'static str] {
+        &[]
     }
 
     fn display_sub(&self, width: usize) -> String {
@@ -189,6 +263,10 @@ impl Row for Progress {
         }
     }
 
+    fn sub_sections() -> &'static [&'static str] {
+        &["Files", "Blocks", "Peers"]
+    }
+
     fn display_sub(&self, width: usize) -> String {
         let mut sub = String::new();
         if let Some(transfer) = &self.transfer {
@@ -197,6 +275,9 @@ impl Row for Progress {
             let mut files_table = Table::new(1, false, false);
             sub.extend(files_table.render(&transfer.files, 50).chars());
         }
+        let mut peers_table = Table::new(1, false, false);
+        let peers: Vec<_> = self.peers.iter().collect();
+        sub.extend(peers_table.render(&peers, 50).chars());
         sub
     }
 }

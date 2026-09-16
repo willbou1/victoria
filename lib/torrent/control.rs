@@ -1,5 +1,5 @@
 use std::{
-    time::Duration,
+    collections::HashMap, time::Duration
 };
 
 use crate::{
@@ -16,8 +16,14 @@ pub struct PieceProgress {
 }
 
 #[derive(Clone)]
+pub struct ConnectionProgress {
+    pub down_speed: usize,
+    pub up_speed: usize,
+}
+
+#[derive(Clone)]
 pub struct TransferProgress {
-    pub files: Vec<FileProgress>,
+    pub files: Vec<FileInfo>,
     pub down_speed: usize,
     pub up_speed: usize,
     pub downloaded: usize,
@@ -43,10 +49,20 @@ impl TransferProgress {
 }
 
 #[derive(Clone)]
-pub struct FileProgress {
+pub struct FileInfo {
     pub relative_path: String,
     pub size: usize,
     // TODO priority
+}
+
+#[derive(Clone)]
+pub struct PeerProgress {
+    pub client: Option<String>,
+    pub supports_fast: bool,
+    pub supports_pex: bool,
+    pub supports_metadata: bool,
+    pub supports_dht: bool,
+    pub connection: Option<ConnectionProgress>,
 }
 
 #[derive(Clone)]
@@ -59,6 +75,7 @@ pub struct Progress {
     pub metadata_up_speed: usize,
     pub metadata_bitfield: Bitfield,
     pub transfer: Option<TransferProgress>,
+    pub peers: HashMap<PeerId, PeerProgress>,
 }
 
 pub enum Command {

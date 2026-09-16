@@ -63,6 +63,7 @@ impl<R: Row> Column<R> {
 
 pub trait Row {
     fn columns() -> &'static [Column<Self>] where Self: Sized;
+    fn sub_sections() -> &'static [&'static str];
     fn display_column(&self, index: usize, width: Option<usize>) -> String;
     fn display_sub(&self, width: usize) -> String;
 }
@@ -113,6 +114,14 @@ impl<R: Row> Table<R> {
         }
     }
 
+    fn render_color(&mut self, color: Color) {
+        self.render.push_str(&SetForegroundColor(color).to_string());
+    }
+
+    fn reset_color(&mut self) {
+        self.render.push_str(&ResetColor.to_string());
+    }
+
     fn render_newline(&mut self) {
         self.render.push('\r');
         self.render.push('\n');
@@ -133,9 +142,9 @@ impl<R: Row> Table<R> {
             Left => format!("{cell:<width$}"),
             Right => format!("{cell:>width$}"),
         };
-        self.render.push_str(&SetForegroundColor(color).to_string());
+        self.render_color(color);
         self.render.push_str(&aligned_cell);
-        self.render.push_str(&ResetColor.to_string());
+        self.reset_color();
     }
 
     fn junction_chars(junction: Junction) -> (char, char, char) {
@@ -150,8 +159,11 @@ impl<R: Row> Table<R> {
         }
     }
 
-    fn render_sparator(&mut self, junction: Junction) {
+    fn render_h_sparator(&mut self, junction: Junction) {
         let (left, junction, right) = Self::junction_chars(junction);
+        self.render_color(
+            if self.focused {Color::Green} else {Color::White}
+        );
         self.render.push(left);
         for (c, &width) in self.widths.clone().iter().enumerate() {
             self.render_n('─', self.padding * 2 + width);
@@ -160,27 +172,36 @@ impl<R: Row> Table<R> {
             }
         }
         self.render.push(right);
+        self.reset_color();
         self.render_newline();
     }
 
+    fn render_v_separator(&mut self) {
+        self.render_color(
+            if self.focused {Color::Green} else {Color::White}
+        );
+        self.render.push('│');
+        self.reset_color();
+    }
+    
     fn render_sub(&mut self, width: usize, sub: &str) {
         for line in sub.lines() {
-            self.render.push('│');
+            self.render_v_separator();
             self.render_padding();
             self.render.extend(line.chars());
             self.render_n(' ', width - visible_width(line) - self.padding - 2);
-            self.render.push('│');
+            self.render_v_separator();
             self.render_newline();
         }
     }
 
     fn render_cells(&mut self, cells: &[String], color: Color) {
-        self.render.push('│');
+        self.render_v_separator();
         for (c, col) in self.columns.iter().enumerate() {
             self.render_padding();
             self.render_cell(c, &cells[c], color);
             self.render_padding();
-            self.render.push('│');
+            self.render_v_separator();
         }
         self.render_newline();
     }
@@ -258,12 +279,12 @@ impl<R: Row> Table<R> {
             }
         }
 
-        self.render_sparator(Junction::Top);
+        self.render_h_sparator(Junction::Top);
         self.render_cells(
             &self.columns.iter().map(|c| c.header.to_string()).collect::<Vec<_>>(),
             Color::Red,
         );
-        self.render_sparator(Junction::Center);
+        self.render_h_sparator(Junction::Center);
 
         for (r, row) in rows.iter().enumerate() {
             self.render_cells(
@@ -275,26 +296,26 @@ impl<R: Row> Table<R> {
                 },
             );
             if self.show_subs[r] {
-                self.render_sparator(Junction::SubTop);
+                self.render_h_sparator(Junction::SubTop);
                 self.render_sub(width, &row.display_sub(width));
                 if r != rows.len() - 1 {
-                    self.render_sparator(Junction::SubBottom);
+                    self.render_h_sparator(Junction::SubBottom);
                 }
             }
         }
 
         if self.show_total {
             if self.show_subs[rows.len() - 1] {
-                self.render_sparator(Junction::SubLast);
+                self.render_h_sparator(Junction::SubLast);
             } else {
-                self.render_sparator(Junction::Center);
+                self.render_h_sparator(Junction::Center);
             }
             self.render_cells(
                 &filled_columns.iter().map(|c| c[rows.len() + 1].clone()).collect::<Vec<_>>(),
                 Color::Yellow,
             );
         }
-        self.render_sparator(Junction::Bottom);
+        self.render_h_sparator(Junction::Bottom);
         &self.render
     }
 }

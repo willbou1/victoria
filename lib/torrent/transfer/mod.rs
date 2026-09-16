@@ -281,7 +281,7 @@ impl Transfer {
                 let who_downloading = self.pieces[index].who_downloading(block_index);
                 if let Some(who) = who_downloading && who == peer_id {
                     self.connections.entry(*peer_id).and_modify(|c| c.reject());
-                    self.pieces[index].reject(block_index, peer_id.clone());
+                    self.pieces[index].reject(block_index, *peer_id);
                 }
             }
             Message::HaveAll => {
@@ -483,33 +483,43 @@ impl Transfer {
         info!("\n{}", connections,);
 
         self.uploaded += uploaded_this_second;
-        self.progress_tx.send_modify(|p| p.transfer = Some(TransferProgress {
-            files: self.metadata.files.iter()
-                .map(|f| FileProgress {
-                    relative_path: if f.path.parent().is_some() {
-                        f.path.iter().skip(1).collect()
-                    } else {
-                        f.path.clone()
-                    }.to_string_lossy().into_owned(),
-                    size: f.length,
-                })
-                .collect(),
-            size: self.metadata.length,
-            down_speed: downloaded_this_second,
-            up_speed: uploaded_this_second,
-            downloaded: self.downloaded_left().0,
-            uploaded: self.uploaded,
-            piece_bitfield: self.piece_bitfield.clone(),
-            active_pieces: self.pieces.iter().enumerate()
-                .filter(|(_, p)| p.is_active())
-                .map(|(p, piece)| PieceProgress {
-                    index: p,
-                    block_bitfield: piece.to_bitfield(),
-                    num_blocks: piece.num_blocks(),
-                    num_obtained_blocks: piece.obtained_blocks(),
-                })
-                .collect(),
-        }));
+        self.progress_tx.send_modify(|p| {
+            for (id, con) in &self.connections {
+                p.peers.entry(*id).and_modify(
+                    |peer| peer.connection = Some(ConnectionProgress {
+                        down_speed: con.downloaded_this_second(),
+                        up_speed: con.uploaded_this_second(),
+                    })
+                );
+            }
+            p.transfer = Some(TransferProgress {
+                files: self.metadata.files.iter()
+                    .map(|f| FileInfo {
+                        relative_path: if f.path.parent().is_some() {
+                            f.path.iter().skip(1).collect()
+                        } else {
+                            f.path.clone()
+                        }.to_string_lossy().into_owned(),
+                        size: f.length,
+                    })
+                    .collect(),
+                size: self.metadata.length,
+                down_speed: downloaded_this_second,
+                up_speed: uploaded_this_second,
+                downloaded: self.downloaded_left().0,
+                uploaded: self.uploaded,
+                piece_bitfield: self.piece_bitfield.clone(),
+                active_pieces: self.pieces.iter().enumerate()
+                    .filter(|(_, p)| p.is_active())
+                    .map(|(p, piece)| PieceProgress {
+                        index: p,
+                        block_bitfield: piece.to_bitfield(),
+                        num_blocks: piece.num_blocks(),
+                        num_obtained_blocks: piece.obtained_blocks(),
+                    })
+                    .collect(),
+            })
+        });
     }
 
     fn check_piece_index(&self, index: usize, op: &str) -> Result<()> {

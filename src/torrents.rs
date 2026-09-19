@@ -338,23 +338,41 @@ impl Row for Progress {
         ]
     }
 
-    fn sub_sections() -> &'static [&'static str] {
-        &["Files", "Blocks", "Peers", "Trackers"]
-    }
-
-    fn display_sub(&self, width: usize) -> String {
-        let mut sub = String::new();
-        if let Some(transfer) = &self.transfer {
-            let mut active_table = Table::new(1, false, false);
-            sub.extend(active_table.render(transfer.active_pieces.clone(), 40).chars());
-            let mut files_table = Table::new(1, false, false);
-            sub.extend(files_table.render(transfer.files.clone(), 50).chars());
-        }
-        let mut trackers_table = Table::new(1, false, false);
-        sub.extend(trackers_table.render(self.trackers.clone(), 50).chars());
-        let mut peers_table = Table::new(1, false, false);
-        sub.extend(peers_table.render(self.peers.clone(), width).chars());
-        sub
+    fn sub_sections() -> &'static [SubSection<Self>] {
+        &[
+            SubSection {
+                header: "Files",
+                content: |prog, width| {
+                    prog.transfer.as_ref().map_or(String::new(), |transfer| {
+                        let mut table = Table::new(1, false, false);
+                        table.render(transfer.files.clone(), width).to_string()
+                    })
+                },
+            },
+            SubSection {
+                header: "Blocks",
+                content: |prog, width| {
+                    prog.transfer.as_ref().map_or(String::new(), |transfer| {
+                        let mut table = Table::new(1, false, false);
+                        table.render(transfer.active_pieces.clone(), width).to_string()
+                    })
+                },
+            },
+            SubSection {
+                header: "Peers",
+                content: |prog, width| {
+                    let mut table = Table::new(1, false, false);
+                    table.render(prog.peers.clone(), width).to_string()
+                },
+            },
+            SubSection {
+                header: "Trackers",
+                content: |prog, width| {
+                    let mut table = Table::new(1, false, false);
+                    table.render(prog.trackers.clone(), width).to_string()
+                },
+            },
+        ]
     }
 }
 

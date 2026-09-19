@@ -1,31 +1,26 @@
 use crossterm::style::{Color, ResetColor, SetForegroundColor, SetBackgroundColor};
+use tracing::instrument::WithSubscriber;
 
 fn visible_width(s: &str) -> usize {
     let bytes = s.as_bytes();
     let mut i = 0;
     let mut width = 0;
-
     while i < bytes.len() {
         if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
             i += 2;
-
-            // Skip CSI parameters until the final byte.
             while i < bytes.len() {
                 let b = bytes[i];
                 i += 1;
-
                 if (0x40..=0x7e).contains(&b) {
                     break;
                 }
             }
         } else {
-            // Decode one UTF-8 character.
             let ch = s[i..].chars().next().unwrap();
             width += 1;
             i += ch.len_utf8();
         }
     }
-
     width
 }
 
@@ -34,6 +29,7 @@ pub enum Alignment {
     Right,
 }
 
+#[derive(Clone, Copy)]
 enum Junction {
     Top,
     Center,
@@ -52,6 +48,11 @@ pub struct Column<R: Row> {
     pub value: fn(&R, width: Option<usize>) -> String,
 }
 
+pub struct SubSection<R: Row> {
+    pub header: &'static str,
+    pub content: fn(&R, width: usize) -> String,
+}
+
 impl<R: Row> Column<R> {
     pub const DEFAULT: Self = Self {
         header: "",
@@ -65,11 +66,10 @@ impl<R: Row> Column<R> {
 
 pub trait Row {
     fn columns() -> &'static [Column<Self>] where Self: Sized;
-    fn sub_sections() -> &'static [&'static str] {
+    fn sub_sections() -> &'static [SubSection<Self>]
+    where Self: Sized,
+    {
         &[]
-    }
-    fn display_sub(&self, width: usize) -> String {
-        String::new()
     }
 }
 
@@ -152,6 +152,16 @@ impl<R: Row> Table<R> {
         self.reset_color();
     }
 
+    fn render_sub_sections(&mut self) {
+        self.render.push('[');
+        self.render.push(' ');
+        for section in R::sub_sections() {
+            self.render.push_str(section.header);
+            self.render.push(' ');
+        }
+        self.render.push(']');
+    }
+
     fn junction_chars(junction: Junction) -> (char, char, char) {
         use Junction::*;
         match junction {
@@ -165,15 +175,19 @@ impl<R: Row> Table<R> {
     }
 
     fn render_h_sparator(&mut self, junction: Junction) {
-        let (left, junction, right) = Self::junction_chars(junction);
+        let (left, junction_char, right) = Self::junction_chars(junction);
         self.render_color(
             if self.focused {Color::Green} else {Color::White}
         );
         self.render.push(left);
+        if let Junction::SubTop = junction {
+            self.render_n('─', self.padding);
+            self.render_sub_sections();
+        }
         for (c, &width) in self.widths.clone().iter().enumerate() {
             self.render_n('─', self.padding * 2 + width);
             if c + 1 < self.widths.len() {
-                self.render.push(junction);
+                self.render.push(junction_char);
             }
         }
         self.render.push(right);
@@ -193,7 +207,7 @@ impl<R: Row> Table<R> {
         for line in sub.lines() {
             self.render_v_separator();
             self.render_padding();
-            self.render.extend(line.chars());
+            self.render.push_str(line);
             self.render_n(' ', width - visible_width(line) - self.padding - 2);
             self.render_v_separator();
             self.render_newline();
@@ -309,7 +323,10 @@ impl<R: Row> Table<R> {
             );
             if self.show_subs[r] {
                 self.render_h_sparator(Junction::SubTop);
-                self.render_sub(width, &row.display_sub(width - 2 * (self.padding + 1)));
+                self.render_sub(
+                    width,
+                    &(R::sub_sections()[0].content)(row, width - 2 * (self.padding + 1))
+                );
                 if r != rows.len() - 1 {
                     self.render_h_sparator(Junction::SubBottom);
                 }

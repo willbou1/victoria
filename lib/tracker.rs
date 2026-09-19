@@ -12,7 +12,8 @@ use tokio::sync::{
 
 use crate::{
     torrent,
-    proto::tracker::*,
+    torrent::control::*,
+    proto::tracker::{Event, TrackerResponse, request_http, request_udp, self},
     types::*,
 };
 
@@ -21,7 +22,8 @@ pub struct Trackers {
     info_hash: Hash,
     client_id: PeerId,
     tx: mpsc::Sender<torrent::Event>,
-    rx: watch::Receiver<Progress>,
+    rx: watch::Receiver<tracker::Progress>,
+    progress_tx: watch::Sender<Progress>,
 
     pub interval: Option<u64>,
     pub min_interval: Option<u64>,
@@ -29,18 +31,24 @@ pub struct Trackers {
     pub leechers: Option<u64>,
     pub peers: Vec<PeerInfo>,
 
-    progress: Progress,
+    progress: tracker::Progress,
 }
 
 impl Trackers {
     pub fn new(
         tx: mpsc::Sender<torrent::Event>,
-        rx: watch::Receiver<Progress>,
+        rx: watch::Receiver<tracker::Progress>,
+        progress_tx: watch::Sender<Progress>,
         client_id: PeerId,
         info_hash: Hash,
         mut urls: Vec<Vec<String>>,
     ) -> Self {
-        for tier_urls in urls.iter_mut() {
+        for (t, tier_urls) in urls.iter_mut().enumerate() {
+            for url in &*tier_urls {
+                progress_tx.send_modify(|p| {
+                    p.trackers.entry(url.clone()).or_insert(TrackerInfo::new(t));
+                });
+            }
             tier_urls.shuffle(&mut rand::rng());
         }
         
@@ -50,6 +58,7 @@ impl Trackers {
             client_id,
             tx,
             rx,
+            progress_tx,
 
             interval: None,
             min_interval: None,
@@ -57,7 +66,7 @@ impl Trackers {
             leechers: None,
             peers: Vec::new(),
 
-            progress: Progress::default(),
+            progress: tracker::Progress::default(),
         }
     }
 
@@ -108,6 +117,16 @@ impl Trackers {
         const ANNOUNCE_TO_ALL_TIERS: bool = true;
         let mut discovered = false;
 
+        for tier_urls in self.urls.iter_mut() {
+            for url in &*tier_urls {
+                    self.progress_tx.send_modify(|p| {
+                        p.trackers.entry(url.clone()).and_modify(|t| {
+                            t.succeeded = None;
+                        });
+                    });
+            }
+        }
+
         for t in 0..self.urls.len() {
             if !ANNOUNCE_TO_ALL_TIERS {
                 self.reset();
@@ -144,12 +163,26 @@ impl Trackers {
                         proto => Err(anyhow::anyhow!("Unsopported protocol {proto}")),
                     } {
                         Ok(response) => {
+                            self.progress_tx.send_modify(|p| {
+                                p.trackers.entry(url.clone()).and_modify(|t| {
+                                    t.succeeded = Some(true);
+                                    t.seeders = response.seeders.map(|s| s as usize);
+                                    t.leechers = response.leechers.map(|l| l as usize);
+                                    t.interval = Some(Duration::from_secs(response.interval));
+                                    t.min_interval = response.min_interval.map(|i| Duration::from_secs(i));
+                                });
+                            });
                             self.update(response);
                             debug!("Successfully announced");
                             good.push(url);
                             discovered = true;
                         }
                         Err(e) => {
+                            self.progress_tx.send_modify(|p| {
+                                p.trackers.entry(url.clone()).and_modify(|t| {
+                                    t.succeeded = Some(false);
+                                });
+                            });
                             debug!("Failed to announced {e}");
                             bad.push(url);
                         }

@@ -125,6 +125,11 @@ impl Transfer {
         for piece in self.pieces.iter_mut() {
             piece.reset(&peer_id);
         }
+        self.progress_tx.send_modify(|p| {
+            p.peers.entry(*peer_id).and_modify(
+                |peer| peer.connection = None
+            );
+        });
         self.connections.remove(peer_id);
     }
     
@@ -234,6 +239,20 @@ impl Transfer {
                     if let Some(who) = who_downloading && who != peer_id {
                         self.connections.get_mut(who).map(|c| c.sub_sent_requests(1));
                     }
+                    
+                    self.progress_tx.send_modify(|p| {
+                        if let Some(piece) = p
+                            .transfer.as_mut().unwrap().active_pieces
+                            .iter_mut().find(|piece| piece.index == index)
+                        {
+                            piece.block_bitfield = self.pieces[index].to_bitfield();
+                            piece.num_obtained_blocks = self.pieces[index].obtained_blocks();
+                        }
+                        if let Some(t) = p.transfer.as_mut() {
+                            t.downloaded = self.downloaded_left().0;
+                            t.piece_bitfield = self.piece_bitfield.clone();
+                        }
+                    });
 
                     if let Some(piece) = self.pieces[index].place(block_index, block, true) {
                         self.write_piece(index, &piece).await?;
@@ -460,39 +479,39 @@ impl Transfer {
     fn statistics(&mut self) {
         let mut downloaded_this_second = 0;
         let mut uploaded_this_second = 0;
-        let mut timeouts_this_second = 0;
 
         let mut connections = String::new();
-        connections.push_str(&format!("{:<56}│{:<54}│{}\n", "", " Download", " Upload"));
-        connections.push_str(
-            &format!("{:<56}│ I C {:>4} {:>3} {:>3} {:>9}/s {:>8} {:>4} {:>4} {:>4} │ I C {:>9}/s\n",
-                "", "PC", "PL", "RQ", "", "Time", "t/s", "c/s", "r/s", "")
-        );
-        for (peer_id, con) in self.connections.iter_mut() {
-            connections.push_str(&format!("{peer_id} {con}\n"));
-            downloaded_this_second += con.downloaded_this_second();
-            uploaded_this_second += con.uploaded_this_second();
-            timeouts_this_second += con.timeouts_this_second();
-            con.reset_stats();
-        }
-        connections.push_str(
-            &format!("{:>56}│     {:>4} {:>3} {:>3} {:>9}/s {:>8} {:>4} {:>4} {:>4} │     {:>9}/s\n",
-                format!("Total ({}) ", self.connections.len()),
-                "", "", "", pretty_size(downloaded_this_second), "", timeouts_this_second, "", "", pretty_size(uploaded_this_second))
-        );
-        info!("\n{}", connections,);
 
-        self.uploaded += uploaded_this_second;
         self.progress_tx.send_modify(|p| {
             for (id, con) in &self.connections {
                 p.peers.entry(*id).and_modify(
                     |peer| peer.connection = Some(ConnectionProgress {
                         down_speed: con.downloaded_this_second(),
                         up_speed: con.uploaded_this_second(),
+                        piece_bitfield: con.piece_bitfield().clone(),
+                        am_choking: con.am_choking(),
+                        am_interested: con.am_interested(),
+                        peer_choking: con.peer_choking(),
+                        peer_interested: con.peer_interested(),
+                        pipeline: con.max_requests(),
+                        piece_cursor: con.piece_cursor,
+                        timeout_rate: con.timeouts_this_second(),
+                        reject_rate: con.rejects_this_second(),
                     })
                 );
             }
-            p.transfer = Some(TransferProgress {
+        });
+        for (peer_id, con) in self.connections.iter_mut() {
+            connections.push_str(&format!("{peer_id} {con}\n"));
+            downloaded_this_second += con.downloaded_this_second();
+            uploaded_this_second += con.uploaded_this_second();
+            con.reset_stats();
+        }
+        info!("\n{}", connections,);
+
+        self.uploaded += uploaded_this_second;
+        self.progress_tx.send_modify(|p| {
+            let transfer = p.transfer.get_or_insert_with(|| TransferProgress {
                 files: self.metadata.files.iter()
                     .map(|f| FileInfo {
                         relative_path: if f.path.parent().is_some() {
@@ -504,21 +523,28 @@ impl Transfer {
                     })
                     .collect(),
                 size: self.metadata.length,
-                down_speed: downloaded_this_second,
-                up_speed: uploaded_this_second,
-                downloaded: self.downloaded_left().0,
-                uploaded: self.uploaded,
+                down_speed: 0,
+                up_speed: 0,
+                downloaded: (self.downloaded_pieces * self.metadata.piece_length).min(self.metadata.length),
+                uploaded: 0,
                 piece_bitfield: self.piece_bitfield.clone(),
-                active_pieces: self.pieces.iter().enumerate()
-                    .filter(|(_, p)| p.is_active())
-                    .map(|(p, piece)| PieceProgress {
-                        index: p,
-                        block_bitfield: piece.to_bitfield(),
-                        num_blocks: piece.num_blocks(),
-                        num_obtained_blocks: piece.obtained_blocks(),
-                    })
-                    .collect(),
-            })
+                active_pieces: Vec::new(),
+            });
+
+            transfer.down_speed = downloaded_this_second;
+            transfer.up_speed = uploaded_this_second;
+            transfer.uploaded = self.uploaded;
+
+            transfer.active_pieces = self.pieces.iter()
+                .enumerate()
+                .filter(|(_, p)| p.is_active())
+                .map(|(p, piece)| PieceProgress {
+                    index: p,
+                    block_bitfield: piece.to_bitfield(),
+                    num_blocks: piece.num_blocks(),
+                    num_obtained_blocks: piece.obtained_blocks(),
+                })
+                .collect();
         });
     }
 

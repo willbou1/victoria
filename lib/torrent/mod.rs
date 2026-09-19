@@ -106,6 +106,19 @@ impl Torrent {
 
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
+        let metadata_piece = Piece::new(None, METADATA_BLOCK_SIZE, 0, info_hash, false);
+        let (progress_tx, progress_rx) = watch::channel(Progress {
+            display_name,
+            num_peers: 0,
+            num_connected_peers: 0,
+            num_discovery_attempts: 0,
+            transfer: None,
+            metadata_bitfield: metadata_piece.to_bitfield(),
+            peers: HashMap::new(),
+            trackers: HashMap::new(),
+        });
+        let (command_tx, command_rx) = mpsc::channel(10);
+
         let (tracker_tx, tracker_rx) = watch::channel(tracker::Progress {
             downloaded: 0,
             uploaded: 0,
@@ -115,29 +128,15 @@ impl Torrent {
         let tracker_manager = Trackers::new(
             tx.clone(),
             tracker_rx,
+            progress_tx.clone(),
             client_id,
             info_hash,
             vec![trackers.clone()],
         );
-
         tokio::task::Builder::new()
             .name("trackers")
             .spawn(tracker_manager.run().instrument(span.clone()))
             .unwrap();
-
-        let metadata_piece = Piece::new(None, METADATA_BLOCK_SIZE, 0, info_hash, false);
-        let (progress_tx, progress_rx) = watch::channel(Progress {
-            display_name,
-            num_peers: 0,
-            num_connected_peers: 0,
-            num_discovery_attempts: 0,
-            transfer: None,
-            metadata_down_speed: 0,
-            metadata_up_speed: 0,
-            metadata_bitfield: metadata_piece.to_bitfield(),
-            peers: HashMap::new(),
-        });
-        let (command_tx, command_rx) = mpsc::channel(10);
 
         Ok(Self {
             peers: HashMap::new(),
@@ -178,6 +177,19 @@ impl Torrent {
 
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
+        let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, metainfo.info_hash, &metadata_bytes);
+        let (progress_tx, progress_rx) = watch::channel(Progress {
+            display_name: metadata.name.clone(),
+            num_peers: 0,
+            num_connected_peers: 0,
+            num_discovery_attempts: 0,
+            transfer: None,
+            metadata_bitfield: metadata_piece.to_bitfield(),
+            peers: HashMap::new(),
+            trackers: HashMap::new(),
+        });
+        let (command_tx, command_rx) = mpsc::channel(10);
+
         let (tracker_tx, tracker_rx) = watch::channel(tracker::Progress {
             downloaded: 0,
             uploaded: 0,
@@ -187,6 +199,7 @@ impl Torrent {
         let trackers = Trackers::new(
             tx.clone(),
             tracker_rx,
+            progress_tx.clone(),
             client_id,
             metainfo.info_hash,
             metainfo.announces.clone(),
@@ -195,20 +208,6 @@ impl Torrent {
             .name("trackers")
             .spawn(trackers.run().instrument(span.clone()))
             .unwrap();
-
-        let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, metainfo.info_hash, &metadata_bytes);
-        let (progress_tx, progress_rx) = watch::channel(Progress {
-            display_name: metadata.name.clone(),
-            num_peers: 0,
-            num_connected_peers: 0,
-            num_discovery_attempts: 0,
-            transfer: None,
-            metadata_bitfield: metadata_piece.to_bitfield(),
-            metadata_down_speed: 0,
-            metadata_up_speed: 0,
-            peers: HashMap::new(),
-        });
-        let (command_tx, command_rx) = mpsc::channel(10);
 
         Ok(Self {
             peers: HashMap::new(),
@@ -291,21 +290,19 @@ impl Torrent {
             status.push_str(&format!("{}", pex_attemps.count()));
         }
 
-        let mut uploaded_metadata_this_second = 0;
-        let mut downloaded_metadata_this_second = 0;
         for (id, peer) in self.peers.iter_mut() {
-            uploaded_metadata_this_second += peer.uploaded_metadata_this_second();
-            downloaded_metadata_this_second += peer.downloaded_metadata_this_second();
+            self.progress_tx.send_modify(|prog| {
+                prog.peers.entry(*id).and_modify(
+                    |p| {
+                        p.metadata_down_speed = peer.downloaded_metadata_this_second();
+                        p.metadata_up_speed = peer.uploaded_metadata_this_second();
+                    }
+                );
+            });
             peer.reset_statistics();
         }
 
-        self.progress_tx.send_modify(|p| {
-            p.metadata_down_speed = METADATA_BLOCK_SIZE * downloaded_metadata_this_second;
-            p.metadata_up_speed = METADATA_BLOCK_SIZE * uploaded_metadata_this_second;
-        });
-
-        info!("\n{}",
-            status);
+        info!("\n{}", status);
     }
 
     async fn tick(&mut self) -> Result<()> {
@@ -477,19 +474,14 @@ impl Torrent {
         self.progress_tx.send_modify(|p| {
             p.num_peers = self.peers.len();
             for (id, peer) in &self.peers {
-                let peer_progress = p.peers.entry(*id).or_insert(PeerProgress {
-                    connection: None,
-                    client: None,
-                    supports_dht: false,
-                    supports_fast: false,
-                    supports_metadata: false,
-                    supports_pex: false,
-                });
+                let peer_progress = p.peers.entry(*id).or_default();
                 peer_progress.client = peer.client.clone();
                 peer_progress.supports_dht = peer.supports_dht;
                 peer_progress.supports_fast = peer.supports_fast;
                 peer_progress.supports_metadata = peer.supports_metadata;
                 peer_progress.supports_pex = peer.supports_pex;
+                peer_progress.metadata_down_speed = peer.downloaded_metadata_this_second();
+                peer_progress.metadata_up_speed = peer.uploaded_metadata_this_second();
             }
             p.num_connected_peers = self.peers.iter()
                 .filter(|p| p.1.state.is_connected()).count();

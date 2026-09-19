@@ -49,6 +49,7 @@ pub struct Column<R: Row> {
     pub max_width: Option<usize>,
     pub flex: Option<usize>,
     pub total: Option<fn(&[R]) -> String>,
+    pub value: fn(&R, width: Option<usize>) -> String,
 }
 
 impl<R: Row> Column<R> {
@@ -58,14 +59,18 @@ impl<R: Row> Column<R> {
         max_width: None,
         flex: None,
         total: None,
+        value: |_, _| String::new(),
     };
 }
 
 pub trait Row {
     fn columns() -> &'static [Column<Self>] where Self: Sized;
-    fn sub_sections() -> &'static [&'static str];
-    fn display_column(&self, index: usize, width: Option<usize>) -> String;
-    fn display_sub(&self, width: usize) -> String;
+    fn sub_sections() -> &'static [&'static str] {
+        &[]
+    }
+    fn display_sub(&self, width: usize) -> String {
+        String::new()
+    }
 }
 
 pub struct Table<R: Row + 'static> {
@@ -206,15 +211,19 @@ impl<R: Row> Table<R> {
         self.render_newline();
     }
 
-    fn chop_string(&self, c: usize, cell: &str) -> String {
-        if let Some(max_width) = self.columns[c].max_width {
-            cell.chars().take(max_width).chain(['…']).collect()
+    fn chop_string(&self, width: usize, cell: &str) -> String {
+        if cell.chars().count() > width {
+            cell.chars().take(width - 1).chain(['…']).collect()
         } else {
             cell.to_string()
         }
     }
 
-    pub fn render(&mut self, rows: &[R], width: usize) -> &str {
+    pub fn render<I>(&mut self, rows: I, width: usize) -> &str
+    where
+        I: IntoIterator<Item = R>,
+    {
+        let rows: Vec<_> = rows.into_iter().collect();
         self.render.clear();
         self.show_subs.resize(rows.len(), false);
         if self.selected > rows.len() - 1 {
@@ -227,7 +236,7 @@ impl<R: Row> Table<R> {
             filled_column.extend(
                 rows.iter().map(|r| {
                     if col.flex.is_none() {
-                        self.chop_string(c, &r.display_column(c, None))
+                        self.chop_string(col.max_width.unwrap_or(usize::MAX), &(col.value)(r, None))
                     } else {
                         String::new()
                     }
@@ -235,7 +244,7 @@ impl<R: Row> Table<R> {
             );
             if self.show_total {
                 filled_column.push(
-                    col.total.map(|t| t(rows)).unwrap_or(String::new())
+                    col.total.map(|t| t(&rows)).unwrap_or(String::new())
                 );
             }
             filled_columns.push(filled_column);
@@ -271,7 +280,10 @@ impl<R: Row> Table<R> {
                         .iter_mut()
                         .zip(rows.iter())
                         .for_each(|(cell, row)| {
-                            *cell = row.display_column(c, Some(self.widths[c]));
+                            *cell = self.chop_string(
+                                self.widths[c],
+                                &(col.value)(row, Some(self.widths[c]))
+                            );
                         });
                 }
                 remaining -= column_width;
@@ -297,7 +309,7 @@ impl<R: Row> Table<R> {
             );
             if self.show_subs[r] {
                 self.render_h_sparator(Junction::SubTop);
-                self.render_sub(width, &row.display_sub(width));
+                self.render_sub(width, &row.display_sub(width - 2 * (self.padding + 1)));
                 if r != rows.len() - 1 {
                     self.render_h_sparator(Junction::SubBottom);
                 }

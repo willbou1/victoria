@@ -19,6 +19,15 @@ pub struct PieceProgress {
 pub struct ConnectionProgress {
     pub down_speed: usize,
     pub up_speed: usize,
+    pub piece_bitfield: Bitfield,
+    pub am_choking: bool,
+    pub am_interested: bool,
+    pub peer_choking: bool,
+    pub peer_interested: bool,
+    pub pipeline: usize,
+    pub piece_cursor: Option<usize>,
+    pub timeout_rate: usize,
+    pub reject_rate: usize,
 }
 
 #[derive(Clone)]
@@ -62,7 +71,47 @@ pub struct PeerProgress {
     pub supports_pex: bool,
     pub supports_metadata: bool,
     pub supports_dht: bool,
+    pub metadata_down_speed: usize,
+    pub metadata_up_speed: usize,
     pub connection: Option<ConnectionProgress>,
+}
+
+impl Default for PeerProgress {
+    fn default() -> Self {
+        Self {
+            connection: None,
+            client: None,
+            supports_dht: false,
+            supports_fast: false,
+            supports_metadata: false,
+            supports_pex: false,
+            metadata_down_speed: 0,
+            metadata_up_speed: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct TrackerInfo {
+    pub tier: usize,
+    pub succeeded: Option<bool>,
+    pub seeders: Option<usize>,
+    pub leechers: Option<usize>,
+    pub interval: Option<Duration>,
+    pub min_interval: Option<Duration>,
+}
+
+impl TrackerInfo {
+    pub fn new(tier: usize) -> Self {
+        Self {
+            tier,
+            succeeded: None,
+            seeders: None,
+            leechers: None,
+            interval: None,
+            min_interval: None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -71,11 +120,10 @@ pub struct Progress {
     pub num_peers: usize,
     pub num_connected_peers: usize,
     pub display_name: String,
-    pub metadata_down_speed: usize,
-    pub metadata_up_speed: usize,
     pub metadata_bitfield: Bitfield,
     pub transfer: Option<TransferProgress>,
     pub peers: HashMap<PeerId, PeerProgress>,
+    pub trackers: HashMap<String, TrackerInfo>,
 }
 
 pub enum Command {

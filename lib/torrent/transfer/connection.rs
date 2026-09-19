@@ -93,6 +93,7 @@ impl Connection {
     pub fn uploaded_this_second(&self) -> usize {self.uploaded_this_second}
     pub fn downloaded_this_second(&self) -> usize {self.downloaded_this_second}
     pub fn timeouts_this_second(&self) -> usize {self.timeouts_this_second}
+    pub fn rejects_this_second(&self) -> usize {self.rejects_this_second}
     pub fn max_requests(&self) -> usize {self.max_requests}
     pub fn sent_requests(&self) -> usize {self.sent_requests}
     pub fn am_choking(&self) -> bool {self.am_choking}
@@ -238,22 +239,12 @@ impl Connection {
 
 impl fmt::Display for Connection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#10} │ {} {} {:>4} {:>3} {:>3} {:>9}/s {:>8.2} {:>4} {:>4} {:>4} │ {} {} {:>9}/s",
-            self.piece_bitfield(),
-            if self.am_interested() {'■'} else {'□'},
-            if self.peer_choking() {'■'} else {'□'},
-            self.piece_cursor.map(|c| format!("{c}")).unwrap_or(String::new()),
-            self.max_requests(),
+        write!(f, "{:>3} {:>8.2} {:>4} {:>4}",
             self.sent_requests(),
-            pretty_size(self.downloaded_this_second()),
             self.response_times_sum.as_secs_f64() * 1000.
                 / self.num_response_times as f64,
-            self.timeouts_this_second,
             self.chokes_this_second,
             self.rejects_this_second,
-            if self.peer_interested() {'■'} else {'□'},
-            if self.am_choking() {'■'} else {'□'},
-            pretty_size(self.uploaded_this_second()),
         )
     }
 }

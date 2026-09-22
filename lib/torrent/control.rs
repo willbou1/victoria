@@ -1,5 +1,6 @@
 use std::{
-    collections::HashMap, time::Duration
+    collections::{HashMap, HashSet},
+    time::Duration
 };
 
 use crate::{
@@ -66,6 +67,7 @@ pub struct FileInfo {
 
 #[derive(Clone)]
 pub struct PeerProgress {
+    pub id: PeerId,
     pub client: Option<String>,
     pub supports_fast: bool,
     pub supports_pex: bool,
@@ -73,12 +75,15 @@ pub struct PeerProgress {
     pub supports_dht: bool,
     pub metadata_down_speed: usize,
     pub metadata_up_speed: usize,
+    pub endpoints: HashSet<PeerEndpoint>,
     pub connection: Option<ConnectionProgress>,
 }
 
-impl Default for PeerProgress {
-    fn default() -> Self {
+impl PeerProgress {
+    pub fn new(id: PeerId) -> Self {
         Self {
+            id,
+            endpoints: HashSet::new(),
             connection: None,
             client: None,
             supports_dht: false,
@@ -93,6 +98,7 @@ impl Default for PeerProgress {
 
 #[derive(Clone)]
 pub struct TrackerInfo {
+    pub url: String,
     pub tier: usize,
     pub succeeded: Option<bool>,
     pub seeders: Option<usize>,
@@ -102,8 +108,9 @@ pub struct TrackerInfo {
 }
 
 impl TrackerInfo {
-    pub fn new(tier: usize) -> Self {
+    pub fn new(tier: usize, url: String) -> Self {
         Self {
+            url,
             tier,
             succeeded: None,
             seeders: None,

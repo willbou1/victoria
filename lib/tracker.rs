@@ -46,7 +46,7 @@ impl Trackers {
         for (t, tier_urls) in urls.iter_mut().enumerate() {
             for url in &*tier_urls {
                 progress_tx.send_modify(|p| {
-                    p.trackers.entry(url.clone()).or_insert(TrackerInfo::new(t));
+                    p.trackers.entry(url.clone()).or_insert(TrackerInfo::new(t, url.clone()));
                 });
             }
             tier_urls.shuffle(&mut rand::rng());

@@ -474,7 +474,8 @@ impl Torrent {
         self.progress_tx.send_modify(|p| {
             p.num_peers = self.peers.len();
             for (id, peer) in &self.peers {
-                let peer_progress = p.peers.entry(*id).or_default();
+                let peer_progress = p.peers.entry(*id).or_insert(PeerProgress::new(*id));
+                peer_progress.endpoints.extend(peer.info.endpoints.iter().cloned());
                 peer_progress.client = peer.client.clone();
                 peer_progress.supports_dht = peer.supports_dht;
                 peer_progress.supports_fast = peer.supports_fast;

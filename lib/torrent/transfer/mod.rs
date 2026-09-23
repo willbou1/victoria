@@ -241,16 +241,19 @@ impl Transfer {
                     }
                     
                     self.progress_tx.send_modify(|p| {
-                        if let Some(piece) = p
-                            .transfer.as_mut().unwrap().active_pieces
-                            .iter_mut().find(|piece| piece.index == index)
-                        {
-                            piece.block_bitfield = self.pieces[index].to_bitfield();
-                            piece.num_obtained_blocks = self.pieces[index].obtained_blocks();
-                        }
                         if let Some(t) = p.transfer.as_mut() {
                             t.downloaded = self.downloaded_left().0;
                             t.piece_bitfield = self.piece_bitfield.clone();
+                            t.active_pieces = self.pieces.iter()
+                                .enumerate()
+                                .filter(|(_, p)| p.is_active())
+                                .map(|(p, piece)| PieceProgress {
+                                    index: p,
+                                    block_bitfield: piece.to_bitfield(),
+                                    num_blocks: piece.num_blocks(),
+                                    num_obtained_blocks: piece.obtained_blocks(),
+                                })
+                                .collect();
                         }
                     });
 
@@ -534,17 +537,6 @@ impl Transfer {
             transfer.down_speed = downloaded_this_second;
             transfer.up_speed = uploaded_this_second;
             transfer.uploaded = self.uploaded;
-
-            transfer.active_pieces = self.pieces.iter()
-                .enumerate()
-                .filter(|(_, p)| p.is_active())
-                .map(|(p, piece)| PieceProgress {
-                    index: p,
-                    block_bitfield: piece.to_bitfield(),
-                    num_blocks: piece.num_blocks(),
-                    num_obtained_blocks: piece.obtained_blocks(),
-                })
-                .collect();
         });
     }
 

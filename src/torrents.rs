@@ -22,7 +22,10 @@ use libvictoria::{
     util::*,
     types::*,
 };
-use super::table::*;
+use super::{
+    table::*,
+    table::state::*,
+};
 
 impl Row for TrackerInfo {
     fn id(&self) -> RowHash {
@@ -369,6 +372,11 @@ impl Row for Progress {
                 value: |prog, _| prog.transfer.as_ref().map(
                     |t| t.eta().map_or(String::new(), |e| pretty_duration(e))
                 ).unwrap_or_default(),
+                total: Some(|rows| {
+                    let max = rows.iter()
+                        .map(|r| r.transfer.as_ref().and_then(|t| t.eta())).max();
+                    max.map(|e| e.map(pretty_duration).unwrap_or_default()).unwrap_or_default()
+                }),
                 ..Column::DEFAULT
             },
         ]
@@ -383,7 +391,7 @@ impl Row for Progress {
                 key: 'f',
                 content: |prog: &Self, width| {
                     prog.transfer.as_ref().map(|transfer| {
-                        let table = Table::new(1, false);
+                        let table = Table::new(1);
                         (table, transfer.files.iter().collect())
                     })
                 },
@@ -393,7 +401,7 @@ impl Row for Progress {
                 key: 'b',
                 content: |prog: &Self, width| {
                     prog.transfer.as_ref().map(|transfer| {
-                        let table = Table::new(1, false);
+                        let table = Table::new(1);
                         (table, transfer.active_pieces.iter().collect())
                     })
                 },
@@ -402,7 +410,7 @@ impl Row for Progress {
                 header: "Peers",
                 key: 'p',
                 content: |prog: &Self, width| {
-                    let table = Table::new(1, false);
+                    let table = Table::new(1);
                     Some((table, prog.peers.values().collect()))
                 },
             },
@@ -410,7 +418,7 @@ impl Row for Progress {
                 header: "Trackers",
                 key: 't',
                 content: |prog: &Self, width| {
-                    let table = Table::new(1, false);
+                    let table = Table::new(1);
                     Some((table, prog.trackers.values().collect()))
                 },
             },
@@ -419,7 +427,7 @@ impl Row for Progress {
 }
 
 struct TorrentTask {
-    task: JoinHandle<()>,
+    task: JoinHandle<Result<()>>,
     tx: mpsc::Sender<Command>,
     rx: watch::Receiver<Progress>,
 }
@@ -473,13 +481,13 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
             task: tokio::task::Builder::new()
                 .name("torrent")
                 .spawn( async move {
-                    torrent.run().await.unwrap();
+                    torrent.run().await
                 }).unwrap()
         });
     }
 
     let mut interval = tokio::time::interval(Duration::from_millis(75));
-    let mut table = Table::<Progress>::new(2, true);
+    let mut table = Table::<Progress>::new(2);
     let mut state = TableState::new::<Progress>(true);
     let mut vertical_position: usize = 0;
     let mut key_state = KeyState::Global;
@@ -518,6 +526,10 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
                                 state.handle_event(TableEvent::UnfocusSection),
                             KeyCode::Char('m')=>
                                 state.handle_event(TableEvent::Mark),
+                            KeyCode::Char('u')=>
+                                state.handle_event(TableEvent::Unmark),
+                            KeyCode::Char('+') =>
+                                state.handle_event(TableEvent::ToggleTotal),
                             KeyCode::Char('g') | KeyCode::KeypadBegin =>
                                 state.handle_event(TableEvent::First),
                             KeyCode::Char('G') | KeyCode::End =>
@@ -571,10 +583,10 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
         out.flush()?;
     }
     
+    restore_terminal()?;
     for torrent_task in torrent_tasks {
         torrent_task.tx.send(Command::Stop).await?;
-        torrent_task.task.await?;
+        torrent_task.task.await??;
     }
-
-    restore_terminal()
+    Ok(())
 }

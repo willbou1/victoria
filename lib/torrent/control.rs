@@ -105,6 +105,7 @@ pub struct TrackerInfo {
     pub leechers: Option<usize>,
     pub interval: Option<Duration>,
     pub min_interval: Option<Duration>,
+    pub endpoints: Option<HashSet<PeerEndpoint>>,
 }
 
 impl TrackerInfo {
@@ -117,6 +118,7 @@ impl TrackerInfo {
             leechers: None,
             interval: None,
             min_interval: None,
+            endpoints: None,
         }
     }
 }

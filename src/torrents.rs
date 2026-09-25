@@ -55,6 +55,13 @@ impl Row for TrackerInfo {
                 ..Column::DEFAULT
             },
             Column {
+                header: "Peer",
+                alignment: Right,
+                value: |tracker, _| tracker.endpoints.as_ref()
+                    .map(|e| e.len().to_string()).unwrap_or_default(),
+                ..Column::DEFAULT
+            },
+            Column {
                 header: "Seed",
                 alignment: Right,
                 value: |tracker, _| tracker.seeders
@@ -81,6 +88,23 @@ impl Row for TrackerInfo {
                 value: |tracker, _| tracker.min_interval
                     .map(|m| pretty_duration(m)).unwrap_or_default(),
                 ..Column::DEFAULT
+            },
+        ]
+    }
+
+    fn sub_sections() -> &'static [&'static dyn SubSection<Self>]
+    where Self: Sized,
+    {
+        &[
+            &TextSubSection {
+                header: "Peers",
+                key: 'p',
+                content: |tracker: &Self, _| {
+                    tracker.endpoints.as_ref().map(|e| e.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n")).unwrap_or_default()
+                },
             },
         ]
     }

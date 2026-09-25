@@ -170,6 +170,8 @@ impl Trackers {
                                     t.leechers = response.leechers.map(|l| l as usize);
                                     t.interval = Some(Duration::from_secs(response.interval));
                                     t.min_interval = response.min_interval.map(|i| Duration::from_secs(i));
+                                    t.endpoints = Some(response.peers.iter()
+                                        .map(|p| p.endpoints.iter().cloned().next().unwrap()).collect());
                                 });
                             });
                             self.update(response);

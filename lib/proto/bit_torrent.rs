@@ -353,7 +353,6 @@ impl BitTorrent {
             Message::Piece{ index, begin, piece, .. } => {
                 payload.push(7);
                 send_index_begin(&mut payload, index, begin);
-                let piece_length = piece.len();
                 payload.extend(piece);
             }
             Message::Choked(choked) => {

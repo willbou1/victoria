@@ -226,9 +226,16 @@ impl Row for PeerProgress {
     {
         &[
             &TextSubSection {
+                header: "Errors",
+                key: 'r',
+                content: |peer: &Self, _| {
+                    peer.errors.join("\n")
+                },
+            },
+            &TextSubSection {
                 header: "Endpoints",
                 key: 'e',
-                content: |peer: &Self, width| {
+                content: |peer: &Self, _| {
                     peer.endpoints.iter()
                         .map(ToString::to_string)
                         .collect::<Vec<_>>()
@@ -413,7 +420,7 @@ impl Row for Progress {
             &TableSubSection {
                 header: "Files",
                 key: 'f',
-                content: |prog: &Self, width| {
+                content: |prog: &Self, _| {
                     prog.transfer.as_ref().map(|transfer| {
                         let table = Table::new(1);
                         (table, transfer.files.iter().collect())
@@ -423,7 +430,7 @@ impl Row for Progress {
             &TableSubSection {
                 header: "Blocks",
                 key: 'b',
-                content: |prog: &Self, width| {
+                content: |prog: &Self, _| {
                     prog.transfer.as_ref().map(|transfer| {
                         let table = Table::new(1);
                         (table, transfer.active_pieces.iter().collect())
@@ -433,7 +440,7 @@ impl Row for Progress {
             &TableSubSection {
                 header: "Peers",
                 key: 'p',
-                content: |prog: &Self, width| {
+                content: |prog: &Self, _| {
                     let table = Table::new(1);
                     Some((table, prog.peers.values().collect()))
                 },
@@ -441,7 +448,7 @@ impl Row for Progress {
             &TableSubSection {
                 header: "Trackers",
                 key: 't',
-                content: |prog: &Self, width| {
+                content: |prog: &Self, _| {
                     let table = Table::new(1);
                     Some((table, prog.trackers.values().collect()))
                 },
@@ -580,12 +587,12 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
             }
         }
 
-        let rows: Vec<Progress> = torrent_tasks.iter()
-            .map(|tt| tt.rx.borrow().clone())
+        let rows: Vec<_> = torrent_tasks.iter()
+            .map(|tt| tt.rx.borrow())
             .collect();
         let (width, height) = terminal::size()?;
 
-        let mut frame = table.render(&rows, &mut state, width.into())
+        let mut frame = table.render(rows.iter().map(|r| &**r), &mut state, width.into())
             .lines().skip(vertical_position)
             .take(height as usize)
             .collect::<Vec<_>>()
@@ -609,7 +616,7 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
     
     restore_terminal()?;
     for torrent_task in torrent_tasks {
-        torrent_task.tx.send(Command::Stop).await?;
+        let _ = torrent_task.tx.send(Command::Stop).await;
         torrent_task.task.await??;
     }
     Ok(())

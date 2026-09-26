@@ -7,7 +7,7 @@ use std::{
     collections::VecDeque,
     fmt,
 };
-use tracing::{debug, level_filters::STATIC_MAX_LEVEL};
+use tracing::{debug};
 
 use crate::{
     bitfield::Bitfield,

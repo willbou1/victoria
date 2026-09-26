@@ -8,7 +8,6 @@ use crate::{
     bitfield::Bitfield,
 };
 
-#[derive(Clone)]
 pub struct PieceProgress {
     pub index: usize,
     pub num_blocks: usize,
@@ -16,7 +15,6 @@ pub struct PieceProgress {
     pub block_bitfield: Bitfield,
 }
 
-#[derive(Clone)]
 pub struct ConnectionProgress {
     pub down_speed: usize,
     pub up_speed: usize,
@@ -31,7 +29,6 @@ pub struct ConnectionProgress {
     pub reject_rate: usize,
 }
 
-#[derive(Clone)]
 pub struct TransferProgress {
     pub files: Vec<FileInfo>,
     pub down_speed: usize,
@@ -58,14 +55,12 @@ impl TransferProgress {
     }
 }
 
-#[derive(Clone)]
 pub struct FileInfo {
     pub relative_path: String,
     pub size: usize,
     // TODO priority
 }
 
-#[derive(Clone)]
 pub struct PeerProgress {
     pub id: PeerId,
     pub client: Option<String>,
@@ -77,6 +72,7 @@ pub struct PeerProgress {
     pub metadata_up_speed: usize,
     pub endpoints: HashSet<PeerEndpoint>,
     pub connection: Option<ConnectionProgress>,
+    pub errors: Vec<String>,
 }
 
 impl PeerProgress {
@@ -92,11 +88,11 @@ impl PeerProgress {
             supports_pex: false,
             metadata_down_speed: 0,
             metadata_up_speed: 0,
+            errors: Vec::new(),
         }
     }
 }
 
-#[derive(Clone)]
 pub struct TrackerInfo {
     pub url: String,
     pub tier: usize,
@@ -123,7 +119,6 @@ impl TrackerInfo {
     }
 }
 
-#[derive(Clone)]
 pub struct Progress {
     pub num_discovery_attempts: usize,
     pub num_peers: usize,

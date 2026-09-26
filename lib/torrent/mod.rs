@@ -19,11 +19,18 @@ use std::{
 };
 
 use crate::{
-    bitfield::Bitfield, metainfo::{Metadata, Metainfo}, proto::{bit_torrent::{BitTorrent, Message}, metadata::MetadataMessage, pex::PEXMessage, tracker}, tracker::Trackers, types::*
+    metainfo::{Metadata, Metainfo},
+    proto::{bit_torrent::{BitTorrent, Message},
+    metadata::MetadataMessage,
+    pex::PEXMessage, tracker},
+    tracker::Trackers,
+    types::*
 };
 use piece::Piece;
 use peer::{Peer, PeerState};
 use control::*;
+
+const AUTOSAVE_INTERVAL: Duration = Duration::from_mins(2);
 
 const METADATA_BLOCK_SIZE: usize = 16 * 1024;
 
@@ -231,13 +238,19 @@ impl Torrent {
     pub async fn run(&mut self,) -> Result<()> {
         let span = self.span.clone();
         async {
-            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut tick_interval = tokio::time::interval(Duration::from_secs(1));
+            let mut autosave_interval = tokio::time::interval(AUTOSAVE_INTERVAL);
             loop {
                 tokio::select! {
                     event = self.rx.recv() => {
                         self.handle_event(event.unwrap()).await?;
                     }
-                    _ = interval.tick() => {
+                    _ = autosave_interval.tick() => {
+                        if let Some(transfer) = &mut self.transfer {
+                            transfer.save_state().await?;
+                        }
+                    }
+                    _ = tick_interval.tick() => {
                         self.tick().await?;
                     }
                     command = self.command_rx.recv() => {
@@ -257,7 +270,7 @@ impl Torrent {
         }.instrument(span).await
     }
 
-    fn handle_command(&mut self, command: Command) {
+    fn handle_command(&mut self, _command: Command) {
         
     }
 
@@ -413,8 +426,7 @@ impl Torrent {
                     }
                 }
             },
-            MetadataMessage::Data { index, piece, total_size } => {
-                // TODO fix races here like for normal scheduling
+            MetadataMessage::Data { index, piece, .. } => {
                 if self.transfer.is_none() && !self.metadata.has_obtrined(index) {
                     debug!("Got metadata block {index}");
                     let who_downloading = self.metadata.who_downloading(index);
@@ -595,8 +607,15 @@ impl Torrent {
                 if let Some(transfer) = &mut self.transfer {
                     transfer.sever_connection(&peer_id);
                 }
-                self.peers.entry(peer_id)
-                    .and_modify(|p| p.state.disconnect(error));
+                self.peers.entry(peer_id).and_modify(|p| {
+                    p.state.disconnect(error);
+                    self.progress_tx.send_modify(|progress| {
+                        let peer_progress = progress.peers.entry(peer_id).or_insert(PeerProgress::new(peer_id));
+                        if let PeerState::Disconnected { reason, .. } = &p.state {
+                            peer_progress.errors.push(format!("{reason:#}"));
+                        }
+                    });
+                });
             }
 
             Event::Tracker(peer_infos) => {

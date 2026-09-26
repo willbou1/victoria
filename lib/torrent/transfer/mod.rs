@@ -317,7 +317,7 @@ impl Transfer {
             Message::Suggest { index } => {
                 debug!("Got suggest for block {index}");
             },
-            Message::AllowedFast { index } => (),
+            Message::AllowedFast { .. } => (),
 
             _ => (),
         }

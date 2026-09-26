@@ -1,6 +1,5 @@
 use rand::seq::SliceRandom;
-use anyhow::Result;
-use tracing::{Instrument, debug, info, trace, warn};
+use tracing::{Instrument, debug, trace};
 use std::{
     fmt,
     time::{Duration},
@@ -13,7 +12,7 @@ use tokio::sync::{
 use crate::{
     torrent,
     torrent::control::*,
-    proto::tracker::{Event, TrackerResponse, request_http, request_udp, self},
+    proto::tracker::{TrackerResponse, request_http, request_udp, self},
     types::*,
 };
 

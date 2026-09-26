@@ -93,7 +93,7 @@ impl<R: Row> SubSection<R> for TextSubSection<R> {
         self.key
     }
 
-    fn content(&self, row: &R, state: Option<&mut TableState>, width: usize) -> String {
+    fn content(&self, row: &R, _state: Option<&mut TableState>, width: usize) -> String {
         (self.content)(row, width)
     }
 
@@ -311,7 +311,7 @@ impl<R: Row> Table<R> {
 
     fn render_cells(&mut self, cells: &[String], color: Color, marked: bool) {
         self.render_v_separator(marked);
-        for (c, col) in self.columns.iter().enumerate() {
+        for c in 0..self.columns.len() {
             self.render_padding();
             self.render_cell(c, &cells[c], color);
             self.render_padding();
@@ -342,7 +342,7 @@ impl<R: Row> Table<R> {
         self.focused = state.prev_focused.map_or(true, |pf| pf) && state.focused_section.is_none();
         
         let mut filled_columns: Vec<Vec<_>> = Vec::new();
-        for (c, col) in self.columns.iter().enumerate() {
+        for col in self.columns {
             let mut filled_column = vec![col.header.to_string()];
             filled_column.extend(
                 rows.iter().map(|r| {

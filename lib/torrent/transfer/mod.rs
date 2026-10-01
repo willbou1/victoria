@@ -8,11 +8,10 @@ use tokio::{
     sync::{mpsc, watch},
 };
 use std::{
-    path::{Path},
     collections::{HashMap, VecDeque},
     io::SeekFrom,
 };
-use tracing::{info, warn, debug, trace};
+use tracing::{info, debug, trace};
 
 use crate::{
     bitfield::Bitfield,
@@ -23,7 +22,6 @@ use crate::{
     },
     torrent::PieceProgress,
     types::*,
-    util::*
 };
 use super::piece::Piece;
 use super::control::*;
@@ -35,14 +33,15 @@ const BLOCK_SIZE: usize = 16 * 1024;
 fn block_index(begin: usize) -> usize {begin / BLOCK_SIZE}
 
 pub struct Transfer {
-    metadata: Metadata,
+    pub(crate) metadata: Metadata,
+    info_hash: Hash,
     tracker_tx: watch::Sender<tracker::Progress>,
     progress_tx: watch::Sender<Progress>,
+    config_rx: watch::Receiver<Config>,
     pieces: Vec<Piece>,
     piece_bitfield: Bitfield,
     connections: HashMap<PeerId, Connection>,
     piece_cache: PieceCache,
-
     downloaded_pieces: usize,
     uploaded: usize,
 }
@@ -50,10 +49,12 @@ pub struct Transfer {
 impl Transfer {
     pub async fn new(
         metadata: Metadata,
+        info_hash: Hash,
         tracker_tx: watch::Sender<tracker::Progress>,
         progress_tx: watch::Sender<Progress>,
+        config_rx: watch::Receiver<Config>,
     ) -> Result<Self> {
-        let (pieces, downloaded_pieces, piece_bitfield) = Self::load_state(&metadata).await?;
+        let (pieces, downloaded_pieces, piece_bitfield) = Self::load_state(&metadata, &info_hash, &config_rx).await?;
         let downloaded = (downloaded_pieces * metadata.piece_length).min(metadata.length);
         let left = metadata.length - downloaded;
         let _ = tracker_tx.send(tracker::Progress {
@@ -63,11 +64,13 @@ impl Transfer {
             uploaded: 0,
         });
         Ok(Self {
+            info_hash,
             piece_cache: PieceCache::new(PIEC_CACHE_CAPACITY),
             pieces,
             metadata,
             tracker_tx,
             progress_tx,
+            config_rx,
             downloaded_pieces,
             piece_bitfield,
             connections: HashMap::new(),
@@ -77,20 +80,15 @@ impl Transfer {
 
     pub async fn save_state(&self) -> Result<()> {
         info!("Saving");
-        let mut bitfield = Bitfield::new(self.metadata.num_pieces);
-        for (p, piece) in self.pieces.iter().enumerate() {
-            if piece.is_written() {
-                bitfield.set(p);
-            }
-        }
-        let path = Path::new("torrents").join(format!("{}.state", self.metadata.name));
+        let path = self.config_rx.borrow().data_path
+            .join(self.info_hash.to_string()).join("state");
         fs::create_dir_all(&path.parent().unwrap()).await?;
         let mut file = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(&path).await?;
-        file.write_all(bitfield.as_bytes()).await?;
+        file.write_all(self.piece_bitfield.as_bytes()).await?;
         Ok(())
     }
 
@@ -171,6 +169,9 @@ impl Transfer {
                 }
             }
         }
+
+        #[cfg(not(debug_assertions))]
+        let _ = when;
     }
     
     pub async fn handle_event(
@@ -239,6 +240,22 @@ impl Transfer {
                     if let Some(who) = who_downloading && who != peer_id {
                         self.connections.get_mut(who).map(|c| c.sub_sent_requests(1));
                     }
+
+                    if let Some(piece) = self.pieces[index].place(block_index, block, true) {
+                        self.write_piece(index, &piece).await?;
+                        self.piece_bitfield.set(index);
+                        self.downloaded_pieces += 1;
+                        for con in self.connections.values() {
+                            con.send(Message::Have {index}).await;
+                        }
+                        let (downloaded, left) = self.downloaded_left();
+                        let _ = self.tracker_tx.send(tracker::Progress {
+                            downloaded,
+                            left,
+                            event: tracker::Event::Started,
+                            uploaded: self.uploaded,
+                        });
+                    }
                     
                     self.progress_tx.send_modify(|p| {
                         if let Some(t) = p.transfer.as_mut() {
@@ -256,22 +273,6 @@ impl Transfer {
                                 .collect();
                         }
                     });
-
-                    if let Some(piece) = self.pieces[index].place(block_index, block, true) {
-                        self.write_piece(index, &piece).await?;
-                        self.piece_bitfield.set(index);
-                        self.downloaded_pieces += 1;
-                        for con in self.connections.values() {
-                            con.send(Message::Have {index}).await;
-                        }
-                        let (downloaded, left) = self.downloaded_left();
-                        let _ = self.tracker_tx.send(tracker::Progress {
-                            downloaded,
-                            left,
-                            event: tracker::Event::Started,
-                            uploaded: self.uploaded,
-                        });
-                    }
                 }
             }
 
@@ -330,9 +331,10 @@ impl Transfer {
         Ok(())
     }
 
-    async fn load_state(metadata: &Metadata) -> Result<(Vec<Piece>, usize, Bitfield)> {
+    async fn load_state(metadata: &Metadata, info_hash: &Hash, config_rx: &watch::Receiver<Config>) -> Result<(Vec<Piece>, usize, Bitfield)> {
         let mut pieces = vec![];
-        let path = Path::new("torrents").join(format!("{}.state", metadata.name));
+        let path = config_rx.borrow().data_path
+            .join(info_hash.to_string()).join("state");
         let mut downloaded_pieces = 0;
         let mut bitfield = Bitfield::new(metadata.num_pieces);
         if fs::try_exists(&path).await? {
@@ -368,7 +370,8 @@ impl Transfer {
 
         for piece_file in &self.metadata.piece_files[index] {
             let file = &self.metadata.files[piece_file.file_index];
-            let path = Path::new("torrents").join(file.path.clone());
+            let path = self.config_rx.borrow().download_path
+                .join(file.path.clone());
             let mut src_file = fs::OpenOptions::new()
                 .read(true)
                 .open(&path).await?;
@@ -387,7 +390,8 @@ impl Transfer {
     async fn write_piece(&self, index: usize, piece: &[u8]) -> Result<()> {
         for piece_file in &self.metadata.piece_files[index] {
             let file = &self.metadata.files[piece_file.file_index];
-            let path = Path::new("torrents").join(file.path.clone());
+            let path = self.config_rx.borrow().download_path
+                .join(file.path.clone());
             fs::create_dir_all(&path.parent().unwrap()).await?;
             let mut dst_file = fs::OpenOptions::new()
                 .read(true)

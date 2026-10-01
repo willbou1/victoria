@@ -50,27 +50,28 @@ impl MetadataMessage {
     }
 
     pub fn into_bytes(self) -> Vec<u8> {
+        use BencodeValue::*;
         match self {
             Self::Request { index } => {
-                let mut root = HashMap::new();
-                root.insert("msg_type".to_string(), BencodeValue::Integer(0));
-                root.insert("piece".to_string(), BencodeValue::Integer(index as i64));
-                BencodeValue::Dictionary(root).to_bytes()
+                Dictionary(HashMap::from([
+                    (String::from("msg_type"), Integer(0)),
+                    (String::from("piece"), Integer(index as i64)),
+                ])).to_bytes()
             }
             Self::Data { index, total_size, piece } => {
-                let mut root = HashMap::new();
-                root.insert("msg_type".to_string(), BencodeValue::Integer(0));
-                root.insert("piece".to_string(), BencodeValue::Integer(index as i64));
-                root.insert("total_size".to_string(), BencodeValue::Integer(total_size as i64));
-                let mut ret = BencodeValue::Dictionary(root).to_bytes();
+                let mut ret = Dictionary(HashMap::from([
+                    (String::from("msg_type"), Integer(1)),
+                    (String::from("piece"), Integer(index as i64)),
+                    (String::from("total_size"), Integer(total_size as i64)),
+                ])).to_bytes();
                 ret.extend(piece);
                 ret
             }
             Self::Reject { index } => {
-                let mut root = HashMap::new();
-                root.insert("msg_type".to_string(), BencodeValue::Integer(2));
-                root.insert("piece".to_string(), BencodeValue::Integer(index as i64));
-                BencodeValue::Dictionary(root).to_bytes()
+                Dictionary(HashMap::from([
+                    (String::from("msg_type"), Integer(2)),
+                    (String::from("piece"), Integer(index as i64)),
+                ])).to_bytes()
             }
             _ => Vec::new(),
         }

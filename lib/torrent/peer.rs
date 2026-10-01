@@ -1,4 +1,3 @@
-use reqwest::header::CONNECTION;
 use tokio::{
     sync::mpsc,
 };
@@ -6,7 +5,7 @@ use std::{
     time::{Duration, Instant},
     collections::{HashMap, VecDeque},
 };
-use tracing::{warn, debug};
+use tracing::{debug};
 
 use crate::{
     proto::{bit_torrent::Message, metadata::MetadataMessage},

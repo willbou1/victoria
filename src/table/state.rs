@@ -91,9 +91,7 @@ impl TableState {
             }
             ToggleTotal => self.show_total = !self.show_total,
             Unmark => self.unmark(),
-            ToggleSub => if let Some(row) = self.selected_row_mut() {
-                row.toggle_sub();
-            }
+            ToggleSub => self.toggle_sub(),
             ToggleSection(key) => self.toggle_section(key),
             FocusSection(key) => self.focus_section(key),
             UnfocusSection => if let Some(parent_focused_section) = parent_focused_section {
@@ -108,6 +106,24 @@ impl TableState {
             return self.row_states.get_mut(hash);
         }
         None
+    }
+
+    fn for_selected_or_marked<F>(&mut self, f: F)
+    where
+        F: Fn(&mut RowState)
+    {
+        let marked_rows: Vec<_> = self.row_states.iter_mut()
+            .map(|(_, v)| v).filter(|v| v.marked)
+            .collect();
+        if marked_rows.is_empty() {
+            if let Some(row) = self.selected_row_mut() {
+                f(row);
+            }
+        } else {
+            for row in marked_rows {
+                f(row);
+            }
+        }
     }
 
     fn unmark(&mut self) {
@@ -135,14 +151,21 @@ impl TableState {
         }
     }
 
+    fn toggle_sub(&mut self) {
+        self.for_selected_or_marked(|row| {
+            row.toggle_sub();
+        });
+    }
+
     fn toggle_section(&mut self, key: char) {
         let Some(index) = self.sub_keys.iter().position(|&k| k == key) else {
             return;
         };
-        if let Some(row) = self.selected_row_mut() {
-            row.show_sub = true;
-            row.toggle_section(index);
-        };
+        self.for_selected_or_marked(|row| {
+            if row.toggle_section(index) {
+                row.show_sub = true;
+            }
+        });
     }
 
     fn goto(&mut self, index: usize) {
@@ -197,8 +220,9 @@ impl RowState {
         self.show_sub = !self.show_sub;
     }
 
-    fn toggle_section(&mut self, index: usize) {
+    fn toggle_section(&mut self, index: usize) -> bool {
         self.show_sections[index] = !self.show_sections[index];
+        return self.show_sections[index];
     }
 
     fn show_section(&mut self, index: usize) {

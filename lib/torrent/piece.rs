@@ -1,10 +1,9 @@
-use anyhow::Result;
 use sha1::{Sha1, Digest};
 use std::{
     collections::{HashMap},
     time::{Duration},
 };
-use tracing::{info, warn, debug, trace};
+use tracing::{warn, debug};
 
 use crate::{
     bitfield::Bitfield, timer::Timer, types::*

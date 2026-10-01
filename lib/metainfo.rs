@@ -1,6 +1,6 @@
-use sha1::{Sha1, Digest};
 use std::fmt;
 use std::path::PathBuf;
+use std::collections::HashMap;
 
 use crate::{
     bencode::BencodeValue,
@@ -44,6 +44,23 @@ impl MetainfoFile {
             ),
             _ => return Err(format!("either 'length' or 'files' must be set")),
         }
+    }
+
+    fn to_bencode(&self) -> BencodeValue {
+        use BencodeValue::*;
+        let path = self.path.components()
+            .skip(1)
+            .map(|component| ByteString(
+                component
+                    .as_os_str()
+                    .as_encoded_bytes()
+                    .to_vec()
+            ))
+            .collect();
+        Dictionary(HashMap::from([
+            (String::from("length"), Integer(self.length as i64)),
+            (String::from("path"), List(path))
+        ]))
     }
 }
 
@@ -122,6 +139,31 @@ impl Metadata {
         })
     }
 
+   fn to_bencode(&self) -> BencodeValue {
+        use BencodeValue::*;
+        let mut info = HashMap::from([
+            (String::from("name"), ByteString(self.name.as_bytes().to_vec())),
+            (String::from("piece length"), Integer(self.piece_length as i64)),
+            (String::from("pieces"), ByteString(
+                 self.pieces.iter()
+                     .flat_map(|hash| hash.as_bytes().iter().copied())
+                     .collect(),
+             )),
+        ]);
+        if self.files.len() == 1 {
+            info.insert(String::from("length"),
+                Integer(self.files[0].length as i64),
+            );
+        } else {
+            info.insert(String::from("files"), List(
+                self.files.iter()
+                    .map(MetainfoFile::to_bencode)
+                    .collect(),
+            ));
+        }
+        Dictionary(info)
+    } 
+
     pub fn piece_length(&self, index: usize) -> usize {
         if index == self.num_pieces - 1 {
             self.last_piece_length
@@ -155,28 +197,24 @@ pub struct Metainfo {
 
     pub created_by: Option<String>,
     pub comment: Option<String>,
-    pub info_hash: Hash,
 }
 
 impl Metainfo {
-    pub fn from_magnet(info_hash: Hash, trackers: Vec<String>) -> Self {
+    pub fn from_magnet(trackers: Vec<String>) -> Self {
         Self {
             announces: vec![trackers],
-            info_hash,
             created_by: None,
             comment: None,
         }
     }
     
-    pub fn from_bytes(encoded: &[u8]) -> Result<(Self, Vec<u8>), String> {
+    pub fn from_bytes(encoded: &[u8]) -> Result<(Self, Option<Vec<u8>>), String> {
         let root = BencodeValue::from_bytes(encoded)?.0.ok_or_else(
             || "Unable to find root dictionary"
         )?;
-        let info = root.required("info")?;
-        let info_bytes = info.to_bytes();
+        let info_bytes = root.get("info").and_then(|i| Some(i.to_bytes()));
 
         Ok((Metainfo {
-            info_hash: Hash::from(Sha1::digest(&info_bytes).into()),
             announces: match root.get("announce-list") {
                 Some(announce_list) => announce_list
                     .as_list()
@@ -190,6 +228,45 @@ impl Metainfo {
             comment: root.optional_string("comment")?,
         }, info_bytes))
     }
+
+    pub fn to_bytes(&self, metadata: Option<&Metadata>) -> Vec<u8> {
+        use BencodeValue::*;
+        let mut root = HashMap::new();
+
+        if self.announces.len() == 1 && self.announces[0].len() == 1 {
+            root.insert(String::from("announce"),
+                ByteString(self.announces[0][0].as_bytes().to_vec()),
+            );
+        } else {
+            root.insert(String::from("announce-list"),
+                List(
+                    self.announces.iter()
+                        .map(|tier| List(
+                            tier.iter()
+                                .map(|url| ByteString(url.as_bytes().to_vec()))
+                                .collect(),
+                        ))
+                        .collect(),
+                ),
+            );
+        }
+        if let Some(created_by) = &self.created_by {
+            root.insert(String::from("created by"),
+                ByteString(created_by.as_bytes().to_vec()),
+            );
+        }
+        if let Some(comment) = &self.comment {
+            root.insert(String::from("comment"),
+                ByteString(comment.as_bytes().to_vec()),
+            );
+        }
+        if let Some(metadata) = metadata {
+            root.insert(String::from("info"),
+                metadata.to_bencode(),
+            );
+        }
+        Dictionary(root).to_bytes()
+    }
 }
 
 
@@ -198,8 +275,6 @@ impl fmt::Display for Metainfo {
         if let Some(created_by) = &self.created_by {
             writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Created by", created_by)?;
         }
-        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Info hash",
-            self.info_hash)?;
         write!(f, "{INDENT}{:<LABEL_WIDTH$}", "Tracker tiers")?;
         for (i, announce) in self.announces.iter().enumerate() {
             if i != 0 {

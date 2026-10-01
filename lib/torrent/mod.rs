@@ -3,19 +3,21 @@ mod peer;
 mod transfer;
 pub mod control;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
+use sha1::{Digest, Sha1};
 use tokio::{
     fs,
     sync::mpsc,
     sync::watch,
+    io::AsyncWriteExt,
 };
-use tokio_util::sync::CancellationToken;
 use tracing::{info, warn, debug, Instrument, Span};
 use transfer::Transfer;
 use url::Url;
 use std::{
-    collections::HashMap, path::{Path, PathBuf},
-    time::{Duration},
+    collections::HashMap, path::{PathBuf},
+    time::Duration,
+    path::Path,
 };
 
 use crate::{
@@ -79,7 +81,8 @@ pub struct Torrent {
     rx: mpsc::Receiver<Event>,
     peer_tx: mpsc::Sender<Event>,
     tracker_tx: watch::Sender<tracker::Progress>,
-    client_id: PeerId,
+    info_hash: Hash,
+    display_name: String,
     span: Span,
     discovery_attemps: Vec<DiscoveryAttempt>,
 
@@ -91,10 +94,17 @@ pub struct Torrent {
     command_rx: mpsc::Receiver<Command>,
     pub progress_rx: watch::Receiver<Progress>,
     progress_tx: watch::Sender<Progress>,
+    config_rx: watch::Receiver<Config>,
 }
 
 impl Torrent {
-    pub async fn from_magnet(url: &str, client_id: PeerId) -> Result<Self> {
+    async fn check_already_exists(config_rx: &watch::Receiver<Config>, info_hash: &Hash) -> Result<bool> {
+        Ok(fs::try_exists(
+            config_rx.borrow().data_path.join(info_hash.to_string())
+        ).await?)
+    }
+    
+    pub async fn from_magnet(url: &str, config_rx: watch::Receiver<Config>) -> Result<Option<Self>> {
         let url = Url::parse(url).unwrap();
         let mut pairs = url.query_pairs();
         let xt = pairs.find(|(n, _)| n == "xt").unwrap();
@@ -102,9 +112,130 @@ impl Torrent {
         let display_name = dn.1.into_owned();
 
         let info_hash = Hash::from_xt(&xt.1).unwrap();
+        if Self::check_already_exists(&config_rx, &info_hash).await? {
+            return Ok(None);
+        }
+
         let trackers: Vec<_> = pairs.filter(|(n, _)| n == "tr")
             .map(|(_, v)| v.into_owned()).collect();
 
+        let metadata_piece = Piece::new(None, METADATA_BLOCK_SIZE, 0, info_hash, false);
+
+        Ok(Some(Self::new(
+            &display_name,
+            info_hash,
+            config_rx,
+            Metainfo::from_magnet(trackers),
+            metadata_piece,
+            None,
+        ).await?))
+    }
+
+    pub async fn from_torrent_file(
+        path: &PathBuf,
+        config_rx: watch::Receiver<Config>,
+    ) -> Result<Option<Self>> {
+        let file = fs::read(path).await?;
+        let (metainfo, metadata_bytes) = Metainfo::from_bytes(&file)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        {}
+        info!("Parsed metainfo:\n{}", metainfo);
+
+        let metadata_bytes = metadata_bytes.ok_or(anyhow!("No metadata in metainfo"))?;
+        let metadata = Metadata::from_bytes(&metadata_bytes)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        info!("Parsed metadata:\n{}", metadata);
+
+        let info_hash = Hash::from(Sha1::digest(&metadata_bytes).into());
+        if Self::check_already_exists(&config_rx, &info_hash).await? {
+            return Ok(None);
+        }
+
+        let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes);
+
+        Ok(Some(Self::new(
+            &metadata.name.clone(),
+            info_hash,
+            config_rx,
+            metainfo,
+            metadata_piece,
+            Some(metadata),
+        ).await?))
+    }
+
+    async fn find_torrent_file(dir: &Path) -> Result<PathBuf> {
+        let mut entries = fs::read_dir(dir).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().is_some_and(|ext| ext == "torrent")
+            {
+                return Ok(path);
+            }
+        }
+
+        Err(anyhow!("No .torrent file found"))
+    }
+
+    pub async fn from_info_hash(
+        info_hash_str: &str,
+        config_rx: watch::Receiver<Config>,
+    ) -> Result<Self> {
+        let dir_path = config_rx.borrow().data_path
+            .join(info_hash_str);
+        let path = Self::find_torrent_file(&dir_path).await?;
+        let file = fs::read(&path).await?;
+        let (metainfo, metadata_bytes) = Metainfo::from_bytes(&file)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        {}
+        info!("Parsed metainfo:\n{}", metainfo);
+
+        if let Some(metadata_bytes) = metadata_bytes {
+            let metadata = Metadata::from_bytes(&metadata_bytes)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            info!("Parsed metadata:\n{}", metadata);
+
+            let info_hash = Hash::from(Sha1::digest(&metadata_bytes).into());
+            let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes);
+
+            Self::new(
+                &metadata.name.clone(),
+                info_hash,
+                config_rx,
+                metainfo,
+                metadata_piece,
+                Some(metadata),
+            ).await
+        } else {
+            let info_hash = Hash::from(
+                hex::decode(info_hash_str)?
+                    .try_into()
+                    .map_err(|e: Vec<u8>| anyhow!("invalid info hash length: {}", e.len()))?
+            );
+            let metadata_piece = Piece::new(None, METADATA_BLOCK_SIZE, 0, info_hash, false);
+            let display_name = path.file_stem()
+                .ok_or(anyhow!("No file name to use as display name"))?.to_string_lossy();
+
+            Self::new(
+                &display_name,
+                info_hash,
+                config_rx,
+                metainfo,
+                metadata_piece,
+                None,
+            ).await
+        }
+    }
+
+    async fn new(
+        display_name: &str,
+        info_hash: Hash,
+        config_rx: watch::Receiver<Config>,
+        metainfo: Metainfo,
+        metadata_piece: Piece,
+        metadata: Option<Metadata>,
+    ) -> Result<Self> {
         let span = tracing::info_span!(
             "torrent",
             display_name = %display_name,
@@ -113,80 +244,8 @@ impl Torrent {
 
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
-        let metadata_piece = Piece::new(None, METADATA_BLOCK_SIZE, 0, info_hash, false);
         let (progress_tx, progress_rx) = watch::channel(Progress {
-            display_name,
-            num_peers: 0,
-            num_connected_peers: 0,
-            num_discovery_attempts: 0,
-            transfer: None,
-            metadata_bitfield: metadata_piece.to_bitfield(),
-            peers: HashMap::new(),
-            trackers: HashMap::new(),
-        });
-        let (command_tx, command_rx) = mpsc::channel(10);
-
-        let (tracker_tx, tracker_rx) = watch::channel(tracker::Progress {
-            downloaded: 0,
-            uploaded: 0,
-            left: 0,
-            event: tracker::Event::None,
-        });
-        let tracker_manager = Trackers::new(
-            tx.clone(),
-            tracker_rx,
-            progress_tx.clone(),
-            client_id,
-            info_hash,
-            vec![trackers.clone()],
-        );
-        tokio::task::Builder::new()
-            .name("trackers")
-            .spawn(tracker_manager.run().instrument(span.clone()))
-            .unwrap();
-
-        Ok(Self {
-            peers: HashMap::new(),
-            metainfo: Metainfo::from_magnet(info_hash, trackers),
-            peer_tx: tx,
-            tracker_tx,
-            metadata: metadata_piece,
-            rx,
-            span: span.clone(),
-            client_id,
-            transfer: None,
-            discovery_attemps: Vec::new(),
-
-            progress_rx,
-            progress_tx,
-            command_rx,
-            command_tx
-        })
-    }
-
-    pub async fn from_torrent_file(
-        path: &PathBuf,
-        client_id: PeerId,
-    ) -> Result<Self> {
-        let file = fs::read(path).await?;
-        let (metainfo, metadata_bytes) = Metainfo::from_bytes(&file)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        {}
-        let metadata = Metadata::from_bytes(&metadata_bytes)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        info!("Parsed metainfo:\n{}", metainfo);
-        info!("Parsed metadata:\n{}", metadata);
-        let span = tracing::info_span!(
-            "torrent",
-            display_name = %metadata.name,
-        );
-        let _enter = span.enter();
-
-        let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-
-        let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, metainfo.info_hash, &metadata_bytes);
-        let (progress_tx, progress_rx) = watch::channel(Progress {
-            display_name: metadata.name.clone(),
+            display_name: display_name.to_string(),
             num_peers: 0,
             num_connected_peers: 0,
             num_discovery_attempts: 0,
@@ -207,8 +266,8 @@ impl Torrent {
             tx.clone(),
             tracker_rx,
             progress_tx.clone(),
-            client_id,
-            metainfo.info_hash,
+            config_rx.borrow().client_id,
+            info_hash,
             metainfo.announces.clone(),
         );
         tokio::task::Builder::new()
@@ -216,28 +275,57 @@ impl Torrent {
             .spawn(trackers.run().instrument(span.clone()))
             .unwrap();
 
+        let transfer = if let Some(metadata) = metadata {
+            Some(Transfer::new(
+                metadata,
+                info_hash,
+                tracker_tx.clone(),
+                progress_tx.clone(),
+                config_rx.clone()
+            ).await?)
+        } else {
+            None
+        };
+
         Ok(Self {
+            display_name: display_name.to_string(),
             peers: HashMap::new(),
             peer_tx: tx,
-            transfer: Some(Transfer::new(metadata, tracker_tx.clone(), progress_tx.clone()).await?),
             tracker_tx,
             metadata: metadata_piece,
+            transfer,
             rx,
             span: span.clone(),
-            client_id,
             discovery_attemps: Vec::new(),
             metainfo,
+            info_hash,
 
+            config_rx,
             progress_rx,
             progress_tx,
             command_rx,
             command_tx
         })
     }
+    async fn write_metainfo(&self) -> Result<()> {
+        let path = self.config_rx.borrow().data_path
+            .join(self.info_hash.to_string())
+            .join(format!("{}.torrent", self.display_name));
+        fs::create_dir_all(&path.parent().unwrap()).await?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&path).await?;
+        file.write_all(
+            &self.metainfo.to_bytes(self.transfer.as_ref().map(|t| &t.metadata))
+        ).await?;
+        Ok(())
+    }
 
     pub async fn run(&mut self,) -> Result<()> {
         let span = self.span.clone();
         async {
+            self.write_metainfo().await?;
             let mut tick_interval = tokio::time::interval(Duration::from_secs(1));
             let mut autosave_interval = tokio::time::interval(AUTOSAVE_INTERVAL);
             loop {
@@ -352,8 +440,8 @@ impl Torrent {
     fn try_connect(&self, info: &PeerInfo, known_id: Option<PeerId>) {
         let tx = self.peer_tx.clone();
         let peer_info = info.clone();
-        let info_hash = self.metainfo.info_hash.clone();
-        let client_id = self.client_id;
+        let info_hash = self.info_hash.clone();
+        let client_id = self.config_rx.borrow().client_id;
         tokio::task::Builder::new()
             .name(if known_id.is_some() {
                 "Reconnection"
@@ -443,8 +531,10 @@ impl Torrent {
                         info!("Got metadata:\n{metadata}");
                         let mut transfer = Transfer::new(
                             metadata,
+                            self.info_hash,
                             self.tracker_tx.clone(),
                             self.progress_tx.clone(),
+                            self.config_rx.clone(),
                         ).await?;
                         for (peer_id, peer) in self.peers.iter_mut() {
                             if let PeerState::Connected { tx, initial_transfer_messages, .. } = &mut peer.state {
@@ -457,6 +547,7 @@ impl Torrent {
                             }
                         }
                         self.transfer = Some(transfer);
+                        self.write_metainfo().await?;
                     } else {
                         self.dispatch_metadata_request().await?;
                     }

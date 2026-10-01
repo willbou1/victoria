@@ -1,17 +1,16 @@
+// TODO remember to keep an eye on dead code once in a while
+#![allow(dead_code)]
+
 mod table;
 mod torrents;
 
 use std::{
     env,
 };
-use console_subscriber;
 use tracing_subscriber::{
-    EnvFilter, Layer, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt
+    EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt
 };
 
-use libvictoria::{
-    bencode::BencodeValue,
-};
 use torrents::run_torrents;
 
 #[tokio::main]
@@ -28,6 +27,8 @@ async fn main() {
 
     #[cfg(debug_assertions)]
     let _guard = {
+        use tracing_subscriber::filter::LevelFilter;
+
         let console_layer = console_subscriber::spawn()
             .with_filter(LevelFilter::TRACE);
 
@@ -42,7 +43,6 @@ async fn main() {
                     .add_directive("hyper=warn".parse().unwrap())
                     .add_directive("reqwest=warn".parse().unwrap())
             );
-
 
         tracing_subscriber::registry()
             .with(console_layer)
@@ -60,19 +60,6 @@ async fn main() {
     }
 
     let args: Vec<String> = env::args().collect();
-    let command = &args[1];
 
-    match command.as_str() {
-        "run" => {
-            run_torrents(&args[2..]).await.unwrap_or_else(|e| eprintln!("{e}"));
-        }
-        "decode" => {
-            let second = &args[2];
-            let decoded_value = BencodeValue::from_bytes(second.as_bytes()).unwrap_or_else(
-                |e| panic!("{e}")
-            );
-            println!("{:?}", decoded_value.0.unwrap());
-        }
-        _ => println!("unknown command: {}", args[1]),
-    }
+    run_torrents(&args[1..]).await.unwrap_or_else(|e| eprintln!("{e}"));
 }

@@ -4,15 +4,12 @@ use tokio::{
 };
 use std::{
     time::{Duration},
-    collections::VecDeque,
     fmt,
 };
-use tracing::{debug};
 
 use crate::{
     bitfield::Bitfield,
     proto::bit_torrent::{Message},
-    util::*,
     types::*,
 };
 

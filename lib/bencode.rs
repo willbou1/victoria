@@ -283,8 +283,8 @@ impl BencodeValue {
 
     pub fn string_list(&self, name: &str) -> Result<Vec<String>, String> {
         let strings = self
-            .as_str_list() .ok_or_else(|| format!("'{name}' must be a list of UTF-8 strings"))?
-            .into_iter() .map(str::to_owned)
+            .as_str_list().ok_or_else(|| format!("'{name}' must be a list of UTF-8 strings"))?
+            .into_iter().map(str::to_owned)
             .collect();
         Ok(strings)
     }

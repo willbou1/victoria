@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Result};
 use tokio::{
     net::{
         TcpStream,
@@ -8,11 +8,11 @@ use tokio::{
     sync::mpsc,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap},
     sync::Arc,
     time::{Instant, Duration},
 };
-use tracing::{trace, warn};
+use tracing::{trace};
 
 use crate::{
     bitfield::Bitfield,

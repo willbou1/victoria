@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tracing::{trace, warn};
+use tracing::{trace};
 use tokio::{
     net::UdpSocket,
 };

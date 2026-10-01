@@ -1,4 +1,3 @@
-use anyhow::Error;
 use std::time::Duration;
 
 pub fn pretty_size(size: usize) -> String {

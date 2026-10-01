@@ -1,7 +1,8 @@
 use anyhow::Result;
 use rand::Rng;
 use std::{
-    collections::HashSet, fmt::{self, write},
+    collections::HashSet,
+    fmt,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6, Ipv6Addr}
 };
 
@@ -222,9 +223,10 @@ impl PeerInfo {
     }
 
     pub fn from_tracker_bencode(root: &BencodeValue) -> Result<Vec<Self>, String> {
+        use BencodeValue::*;
         let mut infos = match root.required("peers")? {
-            BencodeValue::List(peers) => Self::from_tracker_bencode_list(peers),
-            BencodeValue::ByteString(peers) => {
+            List(peers) => Self::from_tracker_bencode_list(peers),
+            ByteString(peers) => {
                 Ok(PeerEndpoint::from_compact_4(peers).into_iter()
                     .map(Self::new).collect())
             }
@@ -232,8 +234,8 @@ impl PeerInfo {
         }?;
         if let Some(peers6) = root.get("peers6") {
             infos.extend(match peers6 {
-                BencodeValue::List(peers) => Self::from_tracker_bencode_list(peers),
-                BencodeValue::ByteString(peers) => {
+                List(peers) => Self::from_tracker_bencode_list(peers),
+                ByteString(peers) => {
                     Ok(PeerEndpoint::from_compact_6(peers).into_iter()
                         .map(Self::new).collect())
                 }

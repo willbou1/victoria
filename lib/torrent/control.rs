@@ -1,12 +1,19 @@
 use std::{
     collections::{HashMap, HashSet},
-    time::Duration
+    time::Duration,
+    path::PathBuf,
 };
 
 use crate::{
     types::*,
     bitfield::Bitfield,
 };
+
+pub struct Config {
+    pub client_id: PeerId,
+    pub download_path: PathBuf,
+    pub data_path: PathBuf,
+}
 
 pub struct PieceProgress {
     pub index: usize,

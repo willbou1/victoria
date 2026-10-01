@@ -1,6 +1,6 @@
 pub mod state;
 
-use crossterm::style::{Color, ResetColor, SetBackgroundColor, SetForegroundColor};
+use crossterm::style::{Color, ResetColor, SetForegroundColor};
 
 use state::*;
 

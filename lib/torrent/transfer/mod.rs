@@ -571,10 +571,11 @@ impl Transfer {
     fn check_piece_length(&self, index: usize, begin: usize, length: usize, boundary: bool, op: &str) -> Result<()> {
         self.check_piece_begin(index, begin, boundary, op)?;
         let piece_length = self.metadata.piece_length(index);
+        let block_length = (piece_length - begin).min(BLOCK_SIZE);
         if boundary {
             anyhow::ensure!(
-                length == BLOCK_SIZE,
-                "Length does not match block, got {length}",
+                length == block_length,
+                "Length  of {op} does not match block, got {length}",
             );
         }
         anyhow::ensure!(

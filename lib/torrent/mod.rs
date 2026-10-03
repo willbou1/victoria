@@ -25,7 +25,7 @@ use crate::{
     proto::{bit_torrent::{BitTorrent, Message},
     metadata::MetadataMessage,
     pex::PEXMessage, tracker},
-    tracker::Trackers,
+    tracker::{TrackerEvent, Trackers},
     types::*
 };
 use piece::Piece;
@@ -81,6 +81,7 @@ pub struct Torrent {
     rx: mpsc::Receiver<Event>,
     peer_tx: mpsc::Sender<Event>,
     tracker_tx: watch::Sender<tracker::Progress>,
+    tracker_event_tx: mpsc::Sender<TrackerEvent>,
     info_hash: Hash,
     display_name: String,
     span: Span,
@@ -256,6 +257,7 @@ impl Torrent {
         });
         let (command_tx, command_rx) = mpsc::channel(10);
 
+        let (tracker_event_tx, tracker_event_rx) = mpsc::channel(10);
         let (tracker_tx, tracker_rx) = watch::channel(tracker::Progress {
             downloaded: 0,
             uploaded: 0,
@@ -266,6 +268,7 @@ impl Torrent {
             tx.clone(),
             tracker_rx,
             progress_tx.clone(),
+            tracker_event_rx,
             config_rx.borrow().client_id,
             info_hash,
             metainfo.announces.clone(),
@@ -292,6 +295,7 @@ impl Torrent {
             peers: HashMap::new(),
             peer_tx: tx,
             tracker_tx,
+            tracker_event_tx,
             metadata: metadata_piece,
             transfer,
             rx,
@@ -349,7 +353,13 @@ impl Torrent {
                                 }
                                 break;
                             }
-                            Some(command) => self.handle_command(command),
+                            Some(Command::Delete) => {
+                                let path = self.config_rx.borrow().data_path
+                                    .join(self.info_hash.to_string());
+                                fs::remove_dir_all(path).await?;
+                                break;
+                            }
+                            Some(command) => self.handle_command(command).await?,
                         }
                     }
                 }
@@ -358,8 +368,14 @@ impl Torrent {
         }.instrument(span).await
     }
 
-    fn handle_command(&mut self, _command: Command) {
-        
+    async fn handle_command(&mut self, command: Command) -> Result<()> {
+        match command {
+            Command::ReloadTrackers => {
+                self.tracker_event_tx.send(TrackerEvent::Reload).await?;
+            }
+            _ => (),
+        }
+        Ok(())
     }
 
     fn statistics(&mut self) {

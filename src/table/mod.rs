@@ -71,20 +71,32 @@ pub struct TextSubSection<R: Row> {
     pub content: fn(&R, width: usize) -> String,
 }
 
-pub struct TableSubSection<R: Row, S: Row + 'static> {
+pub struct TableSubSection<R, S>
+where
+    R: Row,
+    S: Row<SectionKey = R::SectionKey> + 'static,
+{
+    pub section_key: R::SectionKey,
     pub header: &'static str,
     pub key: char,
     pub content: fn(&R, width: usize) -> Option<(Table<S>, Vec<&S>)>,
 }
 
-pub trait SubSection<R: Row> {
+pub trait SubSection<R>
+where
+    R: Row,
+{
     fn header(&self) -> &'static str;
     fn key(&self) -> char;
-    fn content(&self, row: &R, state: Option<&mut TableState>, width: usize) -> String;
-    fn new_state(&self) -> Option<TableState>;
+    fn content(&self, row: &R, state: Option<&mut TableState<R::SectionKey>>, width: usize) -> String;
+    fn section_key(&self) -> Option<R::SectionKey>;
+    fn new_state(&self) -> Option<TableState<R::SectionKey>>;
 }
 
-impl<R: Row> SubSection<R> for TextSubSection<R> {
+impl<R> SubSection<R> for TextSubSection<R>
+where
+    R: Row,
+{
     fn header(&self) -> &'static str {
         self.header
     }
@@ -93,16 +105,24 @@ impl<R: Row> SubSection<R> for TextSubSection<R> {
         self.key
     }
 
-    fn content(&self, row: &R, _state: Option<&mut TableState>, width: usize) -> String {
+    fn content(&self, row: &R, _state: Option<&mut TableState<R::SectionKey>>, width: usize) -> String {
         (self.content)(row, width)
     }
 
-    fn new_state(&self) -> Option<TableState> {
+    fn section_key(&self) -> Option<R::SectionKey> {
+        None
+    }
+
+    fn new_state(&self) -> Option<TableState<R::SectionKey>> {
         None
     }
 }
 
-impl<R: Row, S: Row> SubSection<R> for TableSubSection<R, S> {
+impl<R, S> SubSection<R> for TableSubSection<R, S>
+where
+    R: Row,
+    S: Row<SectionKey = R::SectionKey>,
+{
     fn header(&self) -> &'static str {
         self.header
     }
@@ -111,13 +131,17 @@ impl<R: Row, S: Row> SubSection<R> for TableSubSection<R, S> {
         self.key
     }
 
-    fn content(&self, row: &R, state: Option<&mut TableState>, width: usize) -> String {
+    fn content(&self, row: &R, state: Option<&mut TableState<R::SectionKey>>, width: usize) -> String {
         (self.content)(row, width).map(
             |(mut table, rows)| table.render(rows, state.unwrap(), width).to_string()
         ).unwrap_or_default()
     }
 
-    fn new_state(&self) -> Option<TableState> {
+    fn section_key(&self) -> Option<R::SectionKey> {
+        Some(self.section_key)
+    }
+
+    fn new_state(&self) -> Option<TableState<R::SectionKey>> {
         Some(TableState::new::<S>(false))
     }
 }
@@ -135,16 +159,24 @@ impl<R: Row> Column<R> {
 
 pub type RowHash = u64;
 pub trait Row {
+    type SectionKey: Copy;
+    
     fn id(&self) -> RowHash;
-    fn columns() -> &'static [Column<Self>] where Self: Sized;
+    fn columns() -> &'static [Column<Self>] where Self: Sized {
+        &[]
+    }
     fn sub_sections() -> &'static [&'static dyn SubSection<Self>]
     where Self: Sized,
     {
         &[]
     }
+
 }
 
-pub struct Table<R: Row + 'static>  {
+pub struct Table<R>
+where
+    R: Row + 'static,
+{
     columns: &'static [Column<R>],
     padding: usize,
 
@@ -154,7 +186,10 @@ pub struct Table<R: Row + 'static>  {
     widths: Vec<usize>,
 }
 
-impl<R: Row> Table<R> {
+impl<R> Table<R>
+where
+    R: Row + 'static,
+{
     pub fn new(padding: usize) -> Self {
         Self {
             focused: true,
@@ -201,7 +236,7 @@ impl<R: Row> Table<R> {
         self.reset_color();
     }
 
-    fn render_sub_sections(&mut self, state: &mut RowState) -> usize {
+    fn render_sub_sections(&mut self, state: &mut RowState<R::SectionKey>) -> usize {
         let start = self.render.len();
         self.render_color(
             if self.focused {Color::Green} else {Color::White}
@@ -242,7 +277,7 @@ impl<R: Row> Table<R> {
         }
     }
 
-    fn render_h_sparator(&mut self, junction: Junction, state: Option<&mut RowState>) {
+    fn render_h_sparator(&mut self, junction: Junction, state: Option<&mut RowState<R::SectionKey>>) {
         let (left, junction_char, right) = Self::junction_chars(junction);
         self.render_color(
             if self.focused {Color::Green} else {Color::White}
@@ -283,7 +318,7 @@ impl<R: Row> Table<R> {
         self.reset_color();
     }
     
-    fn render_sub(&mut self, width: usize, row: &R, state: &mut RowState) {
+    fn render_sub(&mut self, width: usize, row: &R, state: &mut RowState<R::SectionKey>) {
         for (i, opened) in state.show_sections.iter().enumerate() {
             if !*opened {
                 continue;
@@ -328,11 +363,11 @@ impl<R: Row> Table<R> {
         }
     }
 
-    fn show_total(state: &TableState) -> bool {
+    fn show_total(state: &TableState<R::SectionKey>) -> bool {
         state.show_total && R::columns().iter().filter(|c| c.total.is_some()).count() > 0
     }
 
-    pub fn render<'a, I>(&mut self, rows: I, state: &mut TableState, width: usize) -> &str
+    pub fn render<'a, I>(&mut self, rows: I, state: &mut TableState<R::SectionKey>, width: usize) -> &str
     where
         I: IntoIterator<Item = &'a R>,
     {

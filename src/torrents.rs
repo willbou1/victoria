@@ -35,7 +35,22 @@ use super::{
     table::state::*,
 };
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum ProgressSection {
+    Trackers,
+    Files,
+    Blocks,
+    Peers,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum Section {
+    Progress(ProgressSection),
+}
+
 impl Row for TrackerInfo {
+    type SectionKey = Section;
+
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();
         self.url.hash(&mut hasher);
@@ -119,6 +134,8 @@ impl Row for TrackerInfo {
 }
 
 impl Row for PeerProgress {
+    type SectionKey = Section;
+
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();
         self.id.hash(&mut hasher);
@@ -255,6 +272,8 @@ impl Row for PeerProgress {
 }
 
 impl Row for FileInfo {
+    type SectionKey = Section;
+
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();
         self.relative_path.hash(&mut hasher);
@@ -280,6 +299,8 @@ impl Row for FileInfo {
 }
 
 impl Row for PieceProgress {
+    type SectionKey = Section;
+
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();
         self.index.hash(&mut hasher);
@@ -324,7 +345,10 @@ impl Row for PieceProgress {
     }
 }
 
+
 impl Row for Progress {
+    type SectionKey = Section;
+    
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();
         self.display_name.hash(&mut hasher);
@@ -426,6 +450,7 @@ impl Row for Progress {
     {
         &[
             &TableSubSection {
+                section_key: Section::Progress(ProgressSection::Files),
                 header: "Files",
                 key: 'f',
                 content: |prog: &Self, _| {
@@ -436,6 +461,7 @@ impl Row for Progress {
                 },
             },
             &TableSubSection {
+                section_key: Section::Progress(ProgressSection::Blocks),
                 header: "Blocks",
                 key: 'b',
                 content: |prog: &Self, _| {
@@ -446,6 +472,7 @@ impl Row for Progress {
                 },
             },
             &TableSubSection {
+                section_key: Section::Progress(ProgressSection::Peers),
                 header: "Peers",
                 key: 'p',
                 content: |prog: &Self, _| {
@@ -454,6 +481,7 @@ impl Row for Progress {
                 },
             },
             &TableSubSection {
+                section_key: Section::Progress(ProgressSection::Trackers),
                 header: "Trackers",
                 key: 't',
                 content: |prog: &Self, _| {
@@ -611,7 +639,7 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
         add_torrent(&mut torrent_tasks, config_rx.clone(), arg).await?;
     }
 
-    let mut interval = tokio::time::interval(Duration::from_millis(75));
+    let mut interval = tokio::time::interval(Duration::from_millis(50));
     let mut table = Table::<Progress>::new(2);
     let mut state = TableState::new::<Progress>(true);
     let mut vertical_position: usize = 0;
@@ -657,6 +685,27 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
                                     KeyCode::Char('f') =>
                                         key_state = KeyState::FocusSection,
 
+                                    KeyCode::Char('d') | KeyCode::Char('r') => {
+                                        if let Some(Focus {row: torrent_hash, ..}) = state.follow_focus() {
+                                            if let Some(index) = torrent_tasks
+                                                .iter()
+                                                .position(|tt| tt.rx.borrow().id() == torrent_hash)
+                                            {
+                                                match key.code {
+                                                    KeyCode::Char('d') => {
+                                                        let tt = torrent_tasks.remove(index);
+                                                        let _ = tt.tx.send(Command::Delete).await;
+                                                        tt.task.await??;
+                                                    }
+                                                    KeyCode::Char('r') => {
+                                                        let tt = &torrent_tasks[index];
+                                                        let _ = tt.tx.send(Command::ReloadTrackers).await;
+                                                    }
+                                                    _ => (),
+                                                }
+                                            }
+                                        }
+                                    }
                                     KeyCode::Esc =>
                                         state.handle_event(TableEvent::UnfocusSection),
                                     KeyCode::Char('m')=>

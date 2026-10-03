@@ -141,4 +141,6 @@ pub enum Command {
     Stop,
     Pause,
     Resume,
+    Delete,
+    ReloadTrackers,
 }

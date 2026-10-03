@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, marker::PhantomData};
 
 use super::*;
 
@@ -12,21 +12,39 @@ pub enum TableEvent {
     UnfocusSection,
 }
 
+pub struct Focus<'a, K>
+where
+    K: Copy + 'static
+{
+    pub row: RowHash,
+    pub section: Option<(K, &'a mut TableState<K>)>,
+}
+
 #[derive(Debug, Clone)]
-pub struct TableState {
+pub struct TableState<K>
+where
+    K: Copy + 'static,
+{
     pub(crate) prev_focused: Option<bool>,
     pub(crate) focused_section: Option<usize>,
     pub(crate) selected_row: Option<RowHash>,
-    pub(crate) row_states: HashMap<RowHash, RowState>,
+    pub(crate) row_states: HashMap<RowHash, RowState<K>>,
     pub(crate) column_sorts: Vec<Sort>,
     pub(crate) show_total: bool,
     pub(crate) sub_keys: Vec<char>,
-    pub(crate) default_row_state: RowState,
+    pub(crate) sub_section_keys: Vec<Option<K>>,
+    pub(crate) default_row_state: RowState<K>,
     pub(crate) ordered_row_hashes: Vec<RowHash>,
 }
 
-impl TableState {
-    pub fn new<R: Row + 'static>(is_root: bool) -> Self {
+impl<K> TableState<K>
+where
+    K:  Copy + 'static,
+{
+    pub fn new<R>(is_root: bool) -> Self
+    where
+        R: Row<SectionKey = K> + 'static
+    {
         Self {
             show_total: true,
             prev_focused: if is_root {None} else {Some(false)},
@@ -37,10 +55,12 @@ impl TableState {
                 Sort::default(),
                 R::columns().len()
             ).collect(),
-            default_row_state: RowState::new::<R>(),
+            default_row_state: RowState::<K>::new::<R>(),
             ordered_row_hashes: Vec::new(),
             sub_keys: R::sub_sections().iter()
                 .map(|s| s.key()).collect(),
+            sub_section_keys: R::sub_sections().iter()
+                .map(|s| s.section_key()).collect(),
         }
     }
 
@@ -55,6 +75,22 @@ impl TableState {
             self.row_states.entry(*hash).or_insert(self.default_row_state.clone());
         }
         self.ordered_row_hashes = ordered_row_hashes;
+    }
+
+    pub fn follow_focus(&mut self) -> Option<Focus<'_, K>> {
+        let row = self.selected_row?;
+        let section = self.focused_section.and_then(|index| {
+            Some((
+                self.sub_section_keys[index]?,
+                self.row_states.get_mut(&row)?
+                    .sub_table_states[index]
+                    .as_mut()?,
+            ))
+        });
+        Some(Focus {
+            row,
+            section,
+        })
     }
 
     pub fn handle_event(&mut self, event: TableEvent) {
@@ -101,7 +137,7 @@ impl TableState {
         }
     }
 
-    fn selected_row_mut(&mut self) -> Option<&mut RowState> {
+    fn selected_row_mut(&mut self) -> Option<&mut RowState<K>> {
         if let Some(hash) = &self.selected_row {
             return self.row_states.get_mut(hash);
         }
@@ -110,7 +146,7 @@ impl TableState {
 
     fn for_selected_or_marked<F>(&mut self, f: F)
     where
-        F: Fn(&mut RowState)
+        F: Fn(&mut RowState<K>)
     {
         let marked_rows: Vec<_> = self.row_states.iter_mut()
             .map(|(_, v)| v).filter(|v| v.marked)
@@ -139,7 +175,6 @@ impl TableState {
         if self.selected_row.is_some() {
             {
                 let row = self.selected_row_mut().unwrap();
-                row.show_sub = true;
                 row.show_section(index);
 
                 if let Some(state) = &mut row.sub_table_states[index] {
@@ -162,9 +197,7 @@ impl TableState {
             return;
         };
         self.for_selected_or_marked(|row| {
-            if row.toggle_section(index) {
-                row.show_sub = true;
-            }
+            row.toggle_section(index);
         });
     }
 
@@ -191,15 +224,25 @@ impl TableState {
 }
 
 #[derive(Debug, Clone)]
-pub struct RowState {
+pub struct RowState<K>
+where
+    K: Copy + 'static,
+{
     pub(crate) marked: bool,
     pub(crate) show_sub: bool,
     pub(crate) show_sections: Vec<bool>,
-    pub(crate) sub_table_states: Vec<Option<TableState>>,
+    pub(crate) sub_table_states: Vec<Option<TableState<K>>>,
+    _marker: PhantomData<K>,
 }
 
-impl RowState {
-    fn new<R: Row + 'static>() -> Self {
+impl<K> RowState<K>
+where
+    K: Copy + 'static,
+{
+    fn new<R>() -> Self
+    where
+        R: Row<SectionKey = K> + 'static
+    {
         Self {
             marked: false,
             show_sub: false,
@@ -209,6 +252,8 @@ impl RowState {
             ).collect(),
             sub_table_states: R::sub_sections().iter()
                 .map(|s| s.new_state()).collect(),
+
+            _marker: PhantomData,
         }
     }
 
@@ -220,12 +265,20 @@ impl RowState {
         self.show_sub = !self.show_sub;
     }
 
-    fn toggle_section(&mut self, index: usize) -> bool {
-        self.show_sections[index] = !self.show_sections[index];
-        return self.show_sections[index];
+    fn toggle_section(&mut self, index: usize) {
+        if self.show_sub {
+            self.show_sections[index] = !self.show_sections[index];
+            if self.show_sections.iter().all(|s| !*s) {
+                self.show_sub = false;
+            }
+        } else {
+            self.show_sub = true;
+            self.show_sections[index] = true;
+        }
     }
 
     fn show_section(&mut self, index: usize) {
+        self.show_sub = true;
         self.show_sections[index] = true;
     }
 }

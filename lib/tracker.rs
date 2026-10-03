@@ -16,13 +16,18 @@ use crate::{
     types::*,
 };
 
+pub enum TrackerEvent {
+    Reload,
+}
+
 pub struct Trackers {
     urls: Vec<Vec<String>>,
     info_hash: Hash,
     client_id: PeerId,
     tx: mpsc::Sender<torrent::Event>,
-    rx: watch::Receiver<tracker::Progress>,
+    progress_rx: watch::Receiver<tracker::Progress>,
     progress_tx: watch::Sender<Progress>,
+    rx: mpsc::Receiver<TrackerEvent>,
 
     pub interval: Option<u64>,
     pub min_interval: Option<u64>,
@@ -36,8 +41,9 @@ pub struct Trackers {
 impl Trackers {
     pub fn new(
         tx: mpsc::Sender<torrent::Event>,
-        rx: watch::Receiver<tracker::Progress>,
+        progress_rx: watch::Receiver<tracker::Progress>,
         progress_tx: watch::Sender<Progress>,
+        rx: mpsc::Receiver<TrackerEvent>,
         client_id: PeerId,
         info_hash: Hash,
         mut urls: Vec<Vec<String>>,
@@ -57,6 +63,7 @@ impl Trackers {
             client_id,
             tx,
             rx,
+            progress_rx,
             progress_tx,
 
             interval: None,
@@ -93,8 +100,25 @@ impl Trackers {
                         );
                     }
 
-                    result = self.rx.changed() => match result {
-                        Ok(()) => self.progress = self.rx.borrow().clone(),
+                    event = self.rx.recv() => {
+                        match event {
+                            Some(TrackerEvent::Reload) => {
+                                self.announce().await;
+
+                                sleep.as_mut().reset(
+                                    tokio::time::Instant::now()
+                                    + Duration::from_secs(
+                                        self.interval.unwrap_or(60)
+                                        .max(self.min_interval.unwrap_or(0))
+                                    )
+                                );
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    result = self.progress_rx.changed() => match result {
+                        Ok(()) => self.progress = self.progress_rx.borrow().clone(),
                         Err(_) => {
                             trace!("Quitting tracker loop");
                             return;

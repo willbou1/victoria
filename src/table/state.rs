@@ -122,10 +122,8 @@ where
             Down => self.nav(1),
             First => self.goto(0),
             Last => self.goto(self.ordered_row_hashes.len().saturating_add(1)),
-            Mark => if let Some(row) = self.selected_row_mut() {
-                row.toggle_mark();
-            }
-            ToggleTotal => self.show_total = !self.show_total,
+            Mark => self.mark(),
+            ToggleTotal => self.toggle_total(),
             Unmark => self.unmark(),
             ToggleSub => self.toggle_sub(),
             ToggleSection(key) => self.toggle_section(key),
@@ -162,6 +160,12 @@ where
         }
     }
 
+    fn mark(&mut self) {
+        if let Some(row) = self.selected_row_mut() {
+            row.toggle_mark();
+        }
+    }
+
     fn unmark(&mut self) {
         for state in self.row_states.values_mut() {
             state.marked = false;
@@ -190,6 +194,10 @@ where
         self.for_selected_or_marked(|row| {
             row.toggle_sub();
         });
+    }
+
+    pub fn toggle_total(&mut self) {
+        self.show_total = !self.show_total;
     }
 
     fn toggle_section(&mut self, key: char) {

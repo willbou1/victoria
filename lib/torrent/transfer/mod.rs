@@ -54,7 +54,8 @@ impl Transfer {
         progress_tx: watch::Sender<Progress>,
         config_rx: watch::Receiver<Config>,
     ) -> Result<Self> {
-        let (pieces, downloaded_pieces, piece_bitfield) = Self::load_state(&metadata, &info_hash, &config_rx).await?;
+        let (pieces, downloaded_pieces, piece_bitfield)
+            = Self::load_state(&metadata, &info_hash, &config_rx).await?;
         let downloaded = (downloaded_pieces * metadata.piece_length).min(metadata.length);
         let left = metadata.length - downloaded;
         let _ = tracker_tx.send(tracker::Progress {
@@ -331,7 +332,11 @@ impl Transfer {
         Ok(())
     }
 
-    async fn load_state(metadata: &Metadata, info_hash: &Hash, config_rx: &watch::Receiver<Config>) -> Result<(Vec<Piece>, usize, Bitfield)> {
+    async fn load_state(
+        metadata: &Metadata,
+        info_hash: &Hash,
+        config_rx: &watch::Receiver<Config>
+    ) -> Result<(Vec<Piece>, usize, Bitfield)> {
         let mut pieces = vec![];
         let path = config_rx.borrow().data_path
             .join(info_hash.to_string()).join("state");
@@ -352,11 +357,23 @@ impl Transfer {
                 if written {
                     downloaded_pieces += 1;
                 }
-                pieces.push(Piece::new(Some(p), BLOCK_SIZE, metadata.piece_length(p), metadata.pieces[p], written));
+                pieces.push(Piece::new(
+                    Some(p),
+                    BLOCK_SIZE,
+                    metadata.piece_length(p),
+                    metadata.pieces[p],
+                    written
+                ));
             }
         } else {
             for p in 0..metadata.num_pieces {
-                pieces.push(Piece::new(Some(p), BLOCK_SIZE, metadata.piece_length(p), metadata.pieces[p], false));
+                pieces.push(Piece::new(
+                    Some(p),
+                    BLOCK_SIZE,
+                    metadata.piece_length(p),
+                    metadata.pieces[p],
+                    false
+                ));
             }
         }
         Ok((pieces, downloaded_pieces, bitfield))
@@ -487,8 +504,6 @@ impl Transfer {
         let mut downloaded_this_second = 0;
         let mut uploaded_this_second = 0;
 
-        let mut connections = String::new();
-
         self.progress_tx.send_modify(|p| {
             for (id, con) in &self.connections {
                 p.peers.entry(*id).and_modify(
@@ -509,20 +524,18 @@ impl Transfer {
             }
         });
         for (peer_id, con) in self.connections.iter_mut() {
-            connections.push_str(&format!("{peer_id} {con}\n"));
             downloaded_this_second += con.downloaded_this_second();
             uploaded_this_second += con.uploaded_this_second();
             con.reset_stats();
         }
-        info!("\n{}", connections,);
 
         self.uploaded += uploaded_this_second;
         self.progress_tx.send_modify(|p| {
             let transfer = p.transfer.get_or_insert_with(|| TransferProgress {
                 files: self.metadata.files.iter()
                     .map(|f| FileInfo {
-                        relative_path: if f.path.parent().is_some() {
-                            f.path.iter().skip(1).collect()
+                        relative_path: if f.path.components().nth(1).is_some() {
+                            f.path.components().skip(1).collect()
                         } else {
                             f.path.clone()
                         }.to_string_lossy().into_owned(),
@@ -577,11 +590,12 @@ impl Transfer {
                 length == block_length,
                 "Length  of {op} does not match block, got {length}",
             );
+        } else {
+            anyhow::ensure!(
+                begin + length <= piece_length,
+                "Length of {op} is past piece {index} of length {piece_length}, got {begin} + {length}",
+            );
         }
-        anyhow::ensure!(
-            begin + length <= piece_length,
-            "Length of {op} is past piece {index} of length {piece_length}, got {begin} + {length}",
-        );
         Ok(())
     }
 }

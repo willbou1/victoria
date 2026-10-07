@@ -379,34 +379,6 @@ impl Torrent {
     }
 
     fn statistics(&mut self) {
-        const VERBOSE_DISCOVERY: bool = false;
-        
-        let mut status = String::new();
-
-        status.push_str("    Discovery attemps:\n        Tracker: ");
-        let tracker_attemps = self.discovery_attemps.iter()
-            .filter(|a| a.mechanism == DiscoveryMechanism::Tracker);
-        if VERBOSE_DISCOVERY {
-            for attempt in tracker_attemps {
-                status.push_str(
-                    &format!("{} ({}) ", attempt.info, attempt.num_attempts));
-            }
-        } else {
-            status.push_str(&format!("{}", tracker_attemps.count()));
-        }
-
-        status.push_str("\n        PEX: ");
-        let pex_attemps = self.discovery_attemps.iter()
-            .filter(|a| a.mechanism == DiscoveryMechanism::PEX);
-        if VERBOSE_DISCOVERY {
-            for attempt in pex_attemps {
-                status.push_str(
-                    &format!("{} ({}) ", attempt.info, attempt.num_attempts));
-            }
-        } else {
-            status.push_str(&format!("{}", pex_attemps.count()));
-        }
-
         for (id, peer) in self.peers.iter_mut() {
             self.progress_tx.send_modify(|prog| {
                 prog.peers.entry(*id).and_modify(
@@ -418,8 +390,6 @@ impl Torrent {
             });
             peer.reset_statistics();
         }
-
-        info!("\n{}", status);
     }
 
     async fn tick(&mut self) -> Result<()> {
@@ -459,11 +429,7 @@ impl Torrent {
         let info_hash = self.info_hash.clone();
         let client_id = self.config_rx.borrow().client_id;
         tokio::task::Builder::new()
-            .name(if known_id.is_some() {
-                "Reconnection"
-            } else {
-                "Discovery"
-            })
+            .name(if known_id.is_some() {"Reconnection"} else {"Discovery"})
             .spawn(async move {
                 match BitTorrent::handshake(
                     &peer_info,
@@ -520,7 +486,9 @@ impl Torrent {
         match message {
             MetadataMessage::Request { index } => {
                 debug!("Got metadata request {index}");
-                if let Some(peer) = self.peers.get_mut(peer_id) && self.metadata.num_blocks() != 0 {
+                if let Some(peer) = self.peers.get_mut(peer_id)
+                    && self.metadata.num_blocks() != 0
+                {
                     if let Some(piece) = self.metadata.get(index) {
                         debug!("Sent metadata {index}");
                         peer.send_metadata(index, self.metadata.num_blocks(), piece.to_vec()).await;
@@ -627,7 +595,10 @@ impl Torrent {
                         Message::ExtensionHandshake { extensions, client, max_requests, metadata_size } => {
                             debug!("Got extension handshake {extensions:?} {client:?} {max_requests:?}");
                             peer.receive_extension_handshake(client, extensions);
-                            if let Some(metadata_size) = metadata_size && self.transfer.is_none() && metadata_size / (16 * 1024) > self.metadata.num_blocks() {
+                            if let Some(metadata_size) = metadata_size
+                                && self.transfer.is_none()
+                                && metadata_size / (16 * 1024) > self.metadata.num_blocks()
+                            {
                                 warn!("Resetting metadata");
                                 self.metadata.set_length_and_reset(metadata_size);
                                 drop(guard);
@@ -717,7 +688,8 @@ impl Torrent {
                 self.peers.entry(peer_id).and_modify(|p| {
                     p.state.disconnect(error);
                     self.progress_tx.send_modify(|progress| {
-                        let peer_progress = progress.peers.entry(peer_id).or_insert(PeerProgress::new(peer_id));
+                        let peer_progress = progress.peers.entry(peer_id)
+                            .or_insert(PeerProgress::new(peer_id));
                         if let PeerState::Disconnected { reason, .. } = &p.state {
                             peer_progress.errors.push(format!("{reason:#}"));
                         }

@@ -234,15 +234,3 @@ impl Connection {
     }
 }
 
-impl fmt::Display for Connection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:>3} {:>8.2} {:>4} {:>4}",
-            self.sent_requests(),
-            self.response_times_sum.as_secs_f64() * 1000.
-                / self.num_response_times as f64,
-            self.chokes_this_second,
-            self.rejects_this_second,
-        )
-    }
-}
-

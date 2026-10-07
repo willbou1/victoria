@@ -150,7 +150,7 @@ impl Metadata {
                      .collect(),
              )),
         ]);
-        if self.files.len() == 1 {
+       if let Some(file) = self.files.get(0) && file.path.components().count() == 1 {
             info.insert(String::from("length"),
                 Integer(self.files[0].length as i64),
             );

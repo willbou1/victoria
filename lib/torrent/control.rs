@@ -77,7 +77,7 @@ pub struct PeerProgress {
     pub supports_dht: bool,
     pub metadata_down_speed: usize,
     pub metadata_up_speed: usize,
-    pub endpoints: HashSet<PeerEndpoint>,
+    pub endpoints: HashSet<Endpoint>,
     pub connection: Option<ConnectionProgress>,
     pub errors: Vec<String>,
 }
@@ -108,7 +108,7 @@ pub struct TrackerInfo {
     pub leechers: Option<usize>,
     pub interval: Option<Duration>,
     pub min_interval: Option<Duration>,
-    pub endpoints: Option<HashSet<PeerEndpoint>>,
+    pub endpoints: Option<HashSet<Endpoint>>,
 }
 
 impl TrackerInfo {

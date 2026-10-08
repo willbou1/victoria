@@ -84,7 +84,7 @@ impl fmt::Display for PeerId {
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub enum PeerEndpoint {
+pub enum Endpoint {
     Ip(SocketAddr),
     Hostname {
         host: String,
@@ -92,7 +92,7 @@ pub enum PeerEndpoint {
     },
 }
 
-impl PeerEndpoint {
+impl Endpoint {
     pub fn from_str(s: &str, port: u16) -> Self {
         if let Ok(ip) = s.parse::<Ipv4Addr>() {
             Self::Ip(SocketAddr::V4(SocketAddrV4::new(ip, port)))
@@ -137,7 +137,7 @@ impl PeerEndpoint {
     }
 }
 
-impl fmt::Display for PeerEndpoint {
+impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Hostname { host, port } => write!(f, "{host}:{port}"),
@@ -149,7 +149,7 @@ impl fmt::Display for PeerEndpoint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerInfo {
     pub id: Option<PeerId>,
-    pub endpoints: HashSet<PeerEndpoint>,
+    pub endpoints: HashSet<Endpoint>,
     pub flags: Option<u8>,
 }
 
@@ -197,7 +197,7 @@ impl PeerInfo {
         self.flags.map(|f| (f & 0x10) >= 1)
     }
 
-    pub fn new(endpoint: PeerEndpoint) -> Self {
+    pub fn new(endpoint: Endpoint) -> Self {
         Self {
             id: None,
             flags: None,
@@ -212,7 +212,7 @@ impl PeerInfo {
             )?)),
             flags: None,
             endpoints: HashSet::from_iter(vec![
-                PeerEndpoint::from_str(
+                Endpoint::from_str(
                     &peer.required_string("ip")?,
                     peer.required_unsigned("port")?.try_into().map_err(
                         |_| ""
@@ -227,7 +227,7 @@ impl PeerInfo {
         let mut infos = match root.required("peers")? {
             List(peers) => Self::from_tracker_bencode_list(peers),
             ByteString(peers) => {
-                Ok(PeerEndpoint::from_compact_4(peers).into_iter()
+                Ok(Endpoint::from_compact_4(peers).into_iter()
                     .map(Self::new).collect())
             }
             _ => Err(format!("'peers' must be either a list or a byte string")),
@@ -236,7 +236,7 @@ impl PeerInfo {
             infos.extend(match peers6 {
                 List(peers) => Self::from_tracker_bencode_list(peers),
                 ByteString(peers) => {
-                    Ok(PeerEndpoint::from_compact_6(peers).into_iter()
+                    Ok(Endpoint::from_compact_6(peers).into_iter()
                         .map(Self::new).collect())
                 }
                 _ => Err(format!("'peers6' must be either a list or a byte string")),
@@ -246,7 +246,7 @@ impl PeerInfo {
     }
 
     pub fn from_compact(compact: &[u8]) -> Vec<Self> {
-        PeerEndpoint::from_compact_4(compact).into_iter()
+        Endpoint::from_compact_4(compact).into_iter()
             .map(Self::new).collect()
     }
 
@@ -255,10 +255,10 @@ impl PeerInfo {
 
         for endpoint in &self.endpoints {
             match endpoint {
-                PeerEndpoint::Ip(addr) => {
+                Endpoint::Ip(addr) => {
                     addrs.push(*addr);
                 }
-                PeerEndpoint::Hostname { host, port } => {
+                Endpoint::Hostname { host, port } => {
                     addrs.extend(
                         tokio::net::lookup_host((host.as_str(), *port)).await?
                     );

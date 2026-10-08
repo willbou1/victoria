@@ -523,7 +523,7 @@ impl Transfer {
                 );
             }
         });
-        for (peer_id, con) in self.connections.iter_mut() {
+        for con in self.connections.values_mut() {
             downloaded_this_second += con.downloaded_this_second();
             uploaded_this_second += con.uploaded_this_second();
             con.reset_stats();

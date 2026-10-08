@@ -207,6 +207,7 @@ impl Metainfo {
             comment: None,
         }
     }
+
     
     pub fn from_bytes(encoded: &[u8]) -> Result<(Self, Option<Vec<u8>>), String> {
         let root = BencodeValue::from_bytes(encoded)?.0.ok_or_else(

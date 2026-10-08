@@ -12,7 +12,7 @@ use crate::{
 #[derive(Debug)]
 pub struct PEXMessage {
     pub added: Vec<PeerInfo>,
-    pub dropped: Vec<PeerEndpoint>,
+    pub dropped: Vec<Endpoint>,
 }
 
 impl PEXMessage {
@@ -29,7 +29,7 @@ impl PEXMessage {
 
         if let Some(added_bytes) = &root.optional_bytes("added")? {
             added.extend(
-                PeerEndpoint::from_compact_4(added_bytes)
+                Endpoint::from_compact_4(added_bytes)
                     .into_iter().enumerate().map(
                         |(e, endpoint)| PeerInfo {
                             endpoints: HashSet::from_iter(vec![endpoint]),
@@ -40,7 +40,7 @@ impl PEXMessage {
         }
         if let Some(added6_bytes) = &root.optional_bytes("added6")? {
             added.extend(
-                PeerEndpoint::from_compact_6(added6_bytes)
+                Endpoint::from_compact_6(added6_bytes)
                     .into_iter().enumerate().map(
                         |(e, endpoint)| PeerInfo {
                             endpoints: HashSet::from_iter(vec![endpoint]),
@@ -51,10 +51,10 @@ impl PEXMessage {
         }
 
         if let Some(dropped_bytes) = &root.optional_bytes("dropped")? {
-            dropped.extend(PeerEndpoint::from_compact_4(dropped_bytes));
+            dropped.extend(Endpoint::from_compact_4(dropped_bytes));
         }
         if let Some(dropped6_bytes) = &root.optional_bytes("dropped6")? {
-            dropped.extend(PeerEndpoint::from_compact_4(dropped6_bytes));
+            dropped.extend(Endpoint::from_compact_4(dropped6_bytes));
         }
 
         Ok(Self {

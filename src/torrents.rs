@@ -25,10 +25,7 @@ use interprocess::local_socket::{
 use directories::{BaseDirs, UserDirs};
 
 use libvictoria::{
-    torrent::{Torrent, control::*},
-    bencode::BencodeValue,
-    util::*,
-    types::*,
+    bencode::{BencodeAccessor, BencodeValue}, torrent::{Torrent, control::*}, types::*, util::*
 };
 use super::{
     table::*,
@@ -579,11 +576,12 @@ async fn send_uris_to_existing(stream: &mut LocalSocketStream, torrent_uris: &[S
     ).await.map_err(|e| anyhow!(e))
 }
 
-fn read_uris(buf: &[u8]) -> Result<Vec<String>, String> {
+fn read_uris(buf: &[u8]) -> Result<Vec<String>> {
     let mut uris = Vec::new();
-    let bencode = BencodeValue::from_bytes(&buf)?.0
-        .ok_or("No bencode root for args")?;
-    for uri in bencode.as_str_list().ok_or("Args must be a string list ")? {
+    let root_val = BencodeValue::from_bytes(&buf)?.0;
+    let root = BencodeAccessor::new(&root_val);
+    
+    for uri in root.as_str_list()? {
         uris.push(uri.to_string());
     }
     Ok(uris)

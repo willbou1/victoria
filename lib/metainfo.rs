@@ -1,9 +1,10 @@
+use anyhow::{Result, anyhow, Context};
 use std::fmt;
 use std::path::PathBuf;
 use std::collections::HashMap;
 
 use crate::{
-    bencode::BencodeValue,
+    bencode::{BencodeValue, BencodeAccessor},
     util::pretty_size,
     types::*,
 };
@@ -17,32 +18,24 @@ pub struct MetainfoFile {
 }
 
 impl MetainfoFile {
-    fn from_bencode(root: &BencodeValue, name: &str) -> Result<Vec<Self>, String> {
-        match (root.get("length"), root.get("files")) {
-            (Some(_), Some(_)) => return Err(format!("only one of 'length' or 'files' must be set")),
+    fn from_bencode(root: &BencodeAccessor, name: &str) -> Result<Vec<Self>> {
+        match (root.optional(b"length")?, root.optional(b"files")?) {
+            (Some(_), Some(_)) => return Err(anyhow!("only one of 'length' or 'files' must be set")),
             (Some(length), _) => Ok(vec![
                 MetainfoFile {
                     path: PathBuf::from(name),
-                    length: length.unsigned("length")? as usize,
+                    length: length.to_integer()?,
                 }
             ]),
             (_, Some(files)) => Ok(
-                files
-                    .as_list()
-                    .ok_or_else(|| "'files' must be a list")?
-                    .iter()
-                    .map(|file| {
-                        Ok(Self {
-                            path: PathBuf::from(name).join(
-                                file.required_string_list("path")?
-                                    .join("/")
-                            ),
-                            length: file.required_unsigned("length")? as usize,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?
+                files.map_list(|file| Ok(Self {
+                    path: PathBuf::from(name).join(
+                        file.required(b"path")?.as_str_list()?.join("/")
+                    ),
+                    length: file.required(b"length")?.to_integer()?,
+                }))?
             ),
-            _ => return Err(format!("either 'length' or 'files' must be set")),
+            _ => return Err(anyhow!("either 'length' or 'files' must be set")),
         }
     }
 
@@ -58,8 +51,8 @@ impl MetainfoFile {
             ))
             .collect();
         Dictionary(HashMap::from([
-            (String::from("length"), Integer(self.length as i64)),
-            (String::from("path"), List(path))
+            (Vec::from(b"length"), Integer(self.length as i64)),
+            (Vec::from(b"path"), List(path))
         ]))
     }
 }
@@ -86,76 +79,77 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    pub fn from_bytes(encoded: &[u8]) -> Result<Self, String> {
-        let info = BencodeValue::from_bytes(encoded)?.0.ok_or_else(
-            || "Unable to find root dictionary"
-        )?;
-        let name = info.required_string("name")?;
-        let files = MetainfoFile::from_bencode(&info, &name)?;
-        let piece_length = info.required_unsigned("piece length")? as usize;
-        let pieces: Vec<_> = info.required_bytes("pieces")?
-            .chunks(20).map(|chunk| Hash::from(chunk.try_into().unwrap()))
-            .collect();
+    pub fn from_bytes(encoded: &[u8]) -> Result<Self> {
+        || -> Result<_> {
+            let info_val = BencodeValue::from_bytes(encoded)?.0;
+            let info = BencodeAccessor::new(&info_val);
+            let name = info.required(b"name")?.to_string()?;
+            let files = MetainfoFile::from_bencode(&info, &name)?;
+            let piece_length: usize = info.required(b"piece length")?.to_integer()?;
+            let pieces: Vec<_> = info.required(b"pieces")?.as_bytes()?
+                .chunks(20).map(|chunk| Hash::from(chunk.try_into().unwrap()))
+                .collect();
 
-        let num_pieces = pieces.len();
-        let length = files.iter().fold(0, |a, e| e.length + a);
-        let last_piece_length = length - piece_length * (num_pieces - 1);
+            let num_pieces = pieces.len();
+            let length = files.iter().fold(0, |a, e| e.length + a);
+            let last_piece_length = length - piece_length * (num_pieces - 1);
 
-        let mut piece_files = Vec::new();
-        for p in 0..num_pieces {
-            let mut file_offset = 0;
-            let piece_start = p * piece_length;
-            let piece_length = if p == num_pieces - 1 {last_piece_length} else {piece_length};
-            let piece_end = piece_start + piece_length;
-            let mut files_for_piece = Vec::new();
-            for (f, file) in files.iter().enumerate() {
-                let file_start = file_offset;
-                let file_end = file_start + file.length;
-                let overlap_start = piece_start.max(file_start);
-                let overlap_end = piece_end.min(file_end);
-                if overlap_start < overlap_end {
-                    files_for_piece.push(PieceFile {
-                        file_index: f,
-                        piece_offset: overlap_start - piece_start,
-                        file_offset: overlap_start - file_start,
-                        length: overlap_end - overlap_start,
-                    });
+            let mut piece_files = Vec::new();
+            for p in 0..num_pieces {
+                let mut file_offset = 0;
+                let piece_start = p * piece_length;
+                let piece_length = if p == num_pieces - 1 {last_piece_length} else {piece_length};
+                let piece_end = piece_start + piece_length;
+                let mut files_for_piece = Vec::new();
+                for (f, file) in files.iter().enumerate() {
+                    let file_start = file_offset;
+                    let file_end = file_start + file.length;
+                    let overlap_start = piece_start.max(file_start);
+                    let overlap_end = piece_end.min(file_end);
+                    if overlap_start < overlap_end {
+                        files_for_piece.push(PieceFile {
+                            file_index: f,
+                            piece_offset: overlap_start - piece_start,
+                            file_offset: overlap_start - file_start,
+                            length: overlap_end - overlap_start,
+                        });
+                    }
+                    file_offset = file_end;
                 }
-                file_offset = file_end;
+                piece_files.push(files_for_piece);
             }
-            piece_files.push(files_for_piece);
-        }
 
-        Ok(Self {
-            name,
-            piece_length,
-            pieces,
-            files,
+            Ok(Self {
+                name,
+                piece_length,
+                pieces,
+                files,
 
-            length,
-            last_piece_length,
-            num_pieces,
-            piece_files,
-        })
+                length,
+                last_piece_length,
+                num_pieces,
+                piece_files,
+            })
+        }().context("while parsing metadata")
     }
 
    fn to_bencode(&self) -> BencodeValue {
         use BencodeValue::*;
         let mut info = HashMap::from([
-            (String::from("name"), ByteString(self.name.as_bytes().to_vec())),
-            (String::from("piece length"), Integer(self.piece_length as i64)),
-            (String::from("pieces"), ByteString(
+            (Vec::from(b"name"), ByteString(self.name.as_bytes().to_vec())),
+            (Vec::from(b"piece length"), Integer(self.piece_length as i64)),
+            (Vec::from(b"pieces"), ByteString(
                  self.pieces.iter()
                      .flat_map(|hash| hash.as_bytes().iter().copied())
                      .collect(),
              )),
         ]);
        if let Some(file) = self.files.get(0) && file.path.components().count() == 1 {
-            info.insert(String::from("length"),
+            info.insert(Vec::from(b"length"),
                 Integer(self.files[0].length as i64),
             );
         } else {
-            info.insert(String::from("files"), List(
+            info.insert(Vec::from(b"files"), List(
                 self.files.iter()
                     .map(MetainfoFile::to_bencode)
                     .collect(),
@@ -170,24 +164,6 @@ impl Metadata {
         } else {
             self.piece_length
         }
-    }
-}
-
-impl fmt::Display for Metadata {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Name", self.name)?;
-        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{} ({})", "Pieces",
-            self.pieces.len(), pretty_size(self.piece_length))?;
-        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Length",
-            pretty_size(self.length))?;
-        write!(f, "{INDENT}{:<LABEL_WIDTH$}", "Files")?;
-        for (i, file) in self.files.iter().enumerate() {
-            if i != 0 {
-                write!(f, "{INDENT}{:<LABEL_WIDTH$}", "")?;
-            }
-            writeln!(f, "{} ({})", file.path.to_string_lossy(), pretty_size(file.length))?;
-        }
-        Ok(())
     }
 }
 
@@ -208,26 +184,22 @@ impl Metainfo {
         }
     }
 
-    
-    pub fn from_bytes(encoded: &[u8]) -> Result<(Self, Option<Vec<u8>>), String> {
-        let root = BencodeValue::from_bytes(encoded)?.0.ok_or_else(
-            || "Unable to find root dictionary"
-        )?;
-        let info_bytes = root.get("info").and_then(|i| Some(i.to_bytes()));
+    pub fn from_bytes(encoded: &[u8]) -> Result<(Self, Option<Vec<u8>>)> {
+        || -> Result<_> {
+            let root_val = BencodeValue::from_bytes(encoded)?.0;
+            let root = BencodeAccessor::new(&root_val);
+            let info_bytes = root.optional(b"info")?.map(|i| i.value.to_bytes());
 
-        Ok((Metainfo {
-            announces: match root.get("announce-list") {
-                Some(announce_list) => announce_list
-                    .as_list()
-                    .ok_or_else(|| "'announce-list' must be a list")?
-                    .iter()
-                    .map(|tier| tier.string_list("announce-list[]"))
-                    .collect::<Result<_, _>>()?,
-                None => vec![vec![root.required_string("announce")?]],
-            },
-            created_by: root.optional_string("created by")?,
-            comment: root.optional_string("comment")?,
-        }, info_bytes))
+            Ok((Metainfo {
+                announces: match root.optional(b"announce-list")? {
+                    Some(announce_list) => announce_list
+                        .map_list(|tier| tier.to_string_list())?,
+                    None => vec![vec![root.required(b"announce")?.to_string()?]],
+                },
+                created_by: root.map_optional(b"created by", |c| c.to_string())?,
+                comment: root.map_optional(b"comment", |c| c.to_string())?,
+            }, info_bytes))
+        }().context("while parsing metainfo")
     }
 
     pub fn to_bytes(&self, metadata: Option<&Metadata>) -> Vec<u8> {
@@ -235,11 +207,11 @@ impl Metainfo {
         let mut root = HashMap::new();
 
         if self.announces.len() == 1 && self.announces[0].len() == 1 {
-            root.insert(String::from("announce"),
+            root.insert(Vec::from(b"announce"),
                 ByteString(self.announces[0][0].as_bytes().to_vec()),
             );
         } else {
-            root.insert(String::from("announce-list"),
+            root.insert(Vec::from(b"announce-list"),
                 List(
                     self.announces.iter()
                         .map(|tier| List(
@@ -252,24 +224,23 @@ impl Metainfo {
             );
         }
         if let Some(created_by) = &self.created_by {
-            root.insert(String::from("created by"),
+            root.insert(Vec::from(b"created by"),
                 ByteString(created_by.as_bytes().to_vec()),
             );
         }
         if let Some(comment) = &self.comment {
-            root.insert(String::from("comment"),
+            root.insert(Vec::from(b"comment"),
                 ByteString(comment.as_bytes().to_vec()),
             );
         }
         if let Some(metadata) = metadata {
-            root.insert(String::from("info"),
+            root.insert(Vec::from(b"info"),
                 metadata.to_bencode(),
             );
         }
         Dictionary(root).to_bytes()
     }
 }
-
 
 impl fmt::Display for Metainfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -285,6 +256,25 @@ impl fmt::Display for Metainfo {
         }
         if let Some(comment) = &self.comment {
             writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Comment", comment)?;
+        }
+        Ok(())
+    }
+}
+
+
+impl fmt::Display for Metadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Name", self.name)?;
+        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{} ({})", "Pieces",
+            self.pieces.len(), pretty_size(self.piece_length))?;
+        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Length",
+            pretty_size(self.length))?;
+        write!(f, "{INDENT}{:<LABEL_WIDTH$}", "Files")?;
+        for (i, file) in self.files.iter().enumerate() {
+            if i != 0 {
+                write!(f, "{INDENT}{:<LABEL_WIDTH$}", "")?;
+            }
+            writeln!(f, "{} ({})", file.path.to_string_lossy(), pretty_size(file.length))?;
         }
         Ok(())
     }

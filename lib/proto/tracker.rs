@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, Context};
 use tracing::{trace};
 use tokio::{
     net::UdpSocket,
@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::{
-    bencode::BencodeValue,
+    bencode::{BencodeAccessor, BencodeValue},
     types::*,
 };
 
@@ -43,18 +43,19 @@ pub struct TrackerResponse {
 }
 
 impl TrackerResponse {
-    fn from_bencode(encoded: &[u8]) -> Result<Self, String> {
-        let root = BencodeValue::from_bytes(encoded)?.0.ok_or_else(
-            || "Unable to find root dictionary"
-        )?;
+    fn from_bencode(encoded: &[u8]) -> Result<Self> {
+        || -> Result<_> {
+            let root_val = BencodeValue::from_bytes(encoded)?.0;
+            let root = BencodeAccessor::new(&root_val);
 
-        Ok(Self {
-            interval: root.required_unsigned("interval")?,
-            min_interval: root.optional_unsigned("min interval")?,
-            seeders: root.optional_unsigned("complete")?,
-            leechers: root.optional_unsigned("incomplete")?,
-            peers: PeerInfo::from_tracker_bencode(&root)?,
-        })
+            Ok(Self {
+                interval: root.required(b"interval")?.to_integer()?,
+                min_interval: root.map_optional(b"min interval", |m| m.to_integer())?,
+                seeders: root.map_optional(b"complete", |m| m.to_integer())?,
+                leechers: root.map_optional(b"incomplete", |m| m.to_integer())?,
+                peers: PeerInfo::from_tracker_bencode(&root)?,
+            })
+        }().context("while parsing metadata message")
     }
 
     fn from_udp_response(response: &[u8]) -> Self {

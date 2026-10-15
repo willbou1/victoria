@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use rand::Rng;
 use std::{
     collections::HashSet,
@@ -6,9 +6,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6, Ipv6Addr}
 };
 
-use crate::{
-    bencode::BencodeValue,
-};
+use crate::bencode::{BencodeAccessor, BencodeValue};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash(pub [u8; 20]);
@@ -205,41 +203,38 @@ impl PeerInfo {
         }
     }
 
-    pub fn from_tracker_bencode_list(list: &[BencodeValue]) -> Result<Vec<Self>, String> {
-        list.iter().map(|peer| Ok(Self {
-            id: Some(PeerId::from(peer.required_bytes("peer id")?.try_into().map_err(
-                |_| "'id' needs to be 20 bytes long"
-            )?)),
+    pub fn from_tracker_bencode_list(list: &BencodeAccessor) -> Result<Vec<Self>> {
+        Ok(list.map_list(|peer| Ok(Self {
+            id: Some(PeerId::from(peer.required(b"peer id")?.to_n_bytes()?)),
             flags: None,
             endpoints: HashSet::from_iter(vec![
                 Endpoint::from_str(
-                    &peer.required_string("ip")?,
-                    peer.required_unsigned("port")?.try_into().map_err(
-                        |_| ""
-                    )?,
+                    peer.required(b"ip")?.as_str()?,
+                    peer.required(b"port")?.to_integer()?,
                 )
             ]),
-        })).collect::<Result<_, _>>()
+        }))?)
     }
 
-    pub fn from_tracker_bencode(root: &BencodeValue) -> Result<Vec<Self>, String> {
+    pub fn from_tracker_bencode(root: &BencodeAccessor) -> Result<Vec<Self>> {
         use BencodeValue::*;
-        let mut infos = match root.required("peers")? {
-            List(peers) => Self::from_tracker_bencode_list(peers),
+        let peers = root.required(b"peers")?;
+        let mut infos = match peers.value {
+            List(_) => Self::from_tracker_bencode_list(&peers),
             ByteString(peers) => {
                 Ok(Endpoint::from_compact_4(peers).into_iter()
                     .map(Self::new).collect())
             }
-            _ => Err(format!("'peers' must be either a list or a byte string")),
+            _ => Err(anyhow!("'peers' must be either a list or a byte string")),
         }?;
-        if let Some(peers6) = root.get("peers6") {
-            infos.extend(match peers6 {
-                List(peers) => Self::from_tracker_bencode_list(peers),
+        if let Some(peers6) = root.optional(b"peers6")? {
+            infos.extend(match peers6.value {
+                List(_) => Self::from_tracker_bencode_list(&peers6),
                 ByteString(peers) => {
                     Ok(Endpoint::from_compact_6(peers).into_iter()
                         .map(Self::new).collect())
                 }
-                _ => Err(format!("'peers6' must be either a list or a byte string")),
+                _ => Err(anyhow!("'peers6' must be either a list or a byte string")),
             }?);
         }
         Ok(infos)

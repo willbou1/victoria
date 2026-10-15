@@ -137,14 +137,11 @@ impl Torrent {
         config_rx: watch::Receiver<Config>,
     ) -> Result<Option<Self>> {
         let file = fs::read(path).await?;
-        let (metainfo, metadata_bytes) = Metainfo::from_bytes(&file)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        {}
+        let (metainfo, metadata_bytes) = Metainfo::from_bytes(&file)?;
         info!("Parsed metainfo:\n{}", metainfo);
 
         let metadata_bytes = metadata_bytes.ok_or(anyhow!("No metadata in metainfo"))?;
-        let metadata = Metadata::from_bytes(&metadata_bytes)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let metadata = Metadata::from_bytes(&metadata_bytes)?;
         info!("Parsed metadata:\n{}", metadata);
 
         let info_hash = Hash::from(Sha1::digest(&metadata_bytes).into());

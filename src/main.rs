@@ -61,5 +61,5 @@ async fn main() {
 
     let args: Vec<String> = env::args().collect();
 
-    run_torrents(&args[1..]).await.unwrap_or_else(|e| eprintln!("{e}"));
+    run_torrents(&args[1..]).await.unwrap_or_else(|e| eprintln!("{e:#}"));
 }

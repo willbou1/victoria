@@ -1,4 +1,4 @@
-use anyhow::{Result};
+use anyhow::{Context, Result};
 use tokio::{
     net::{
         TcpStream,
@@ -15,10 +15,7 @@ use std::{
 use tracing::{trace};
 
 use crate::{
-    bitfield::Bitfield,
-    torrent::{Event},
-    bencode::BencodeValue,
-    types::*,
+    bencode::{BencodeAccessor, BencodeValue}, bitfield::Bitfield, torrent::Event, types::*
 };
 use super::{
     metadata::{MetadataMessage},
@@ -101,23 +98,23 @@ impl Message {
             Self::ExtensionHandshake { extensions, client, max_requests, metadata_size } => {
                 let mut root = HashMap::new();
                 if let Some(client) = client {
-                    root.insert("v".to_string(),
+                    root.insert(vec![b'b'],
                         BencodeValue::ByteString(client.into_bytes())
                     );
                 }
                 if let Some(max_requests) = max_requests {
-                    root.insert("reqq".to_string(),
+                    root.insert(Vec::from(b"reqq"),
                         BencodeValue::Integer(max_requests as i64)
                     );
                 }
                 if let Some(metadata_size) = metadata_size {
-                    root.insert("metadata_size".to_string(),
+                    root.insert(Vec::from(b"metadata_size"),
                         BencodeValue::Integer(metadata_size as i64)
                     );
                 }
-                root.insert("m".to_string(), BencodeValue::Dictionary(
+                root.insert(vec![b'm'], BencodeValue::Dictionary(
                     extensions.iter()
-                        .map(|(name, id)| (name.clone(), BencodeValue::Integer(*id as i64)))
+                        .map(|(name, id)| (name.as_bytes().to_vec(), BencodeValue::Integer(*id as i64)))
                         .collect()
                 ));
                 BencodeValue::Dictionary(root).to_bytes()
@@ -126,20 +123,20 @@ impl Message {
         }
     }
 
-    pub fn from_extension_handshake_bytes(encoded: &[u8]) -> Result<Self, String> {
-        let root = BencodeValue::from_bytes(encoded)?.0.ok_or_else(
-            || "Unable to find root dictionary"
-        )?;
+    pub fn from_extension_handshake_bytes(encoded: &[u8]) -> Result<Self> {
+        || -> Result<_> {
+            let root_val = BencodeValue::from_bytes(encoded)?.0;
+            let root = BencodeAccessor::new(&root_val);
 
-        Ok(Self::ExtensionHandshake {
-            extensions: root.required("m")?.as_dict().ok_or_else(|| "'m' must be a dictionary")?
-                .iter().map(
-                    |(name, id)| Ok((name.clone(), id.unsigned(name)? as u8))
-                ).collect::<Result<HashMap<_, _>, String>>()?,
-            client: root.optional_string("v")?,
-            max_requests: root.optional_unsigned("reqq")?.map(|m| m as usize),
-            metadata_size: root.optional_unsigned("metadata_size")?.map(|s| s as usize),
-        })
+            Ok(Self::ExtensionHandshake {
+                extensions: root.required(b"m")?.map_dict(
+                    |name, id| Ok((String::from_utf8_lossy(name).to_string(), id.to_integer()?))
+                )?.into_iter().collect(),
+                client: root.map_optional(b"v", |v| v.to_string())?,
+                max_requests: root.map_optional(b"reqq", |r| r.to_integer())?,
+                metadata_size: root.map_optional(b"metadata_size", |s| s.to_integer())?,
+            })
+        }().context("while parsing extension handshake")
     }
 }
 

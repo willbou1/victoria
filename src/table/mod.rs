@@ -398,7 +398,7 @@ where
 
         let natural_widths: Vec<usize> = filled_columns
             .iter().map(|fc| {
-                fc.iter().map(|cell| cell.chars().count()).max().unwrap_or(0)
+                fc.iter().map(|cell| visible_width(cell)).max().unwrap_or(0)
             })
             .collect();
 

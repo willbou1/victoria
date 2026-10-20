@@ -1,6 +1,6 @@
 use anyhow::{Result, Context};
 use std::{
-    collections::{HashSet},
+    collections::{HashSet, HashMap},
 };
 
 use crate::{
@@ -35,7 +35,8 @@ impl PEXMessage {
                             |(e, endpoint)| PeerInfo {
                                 endpoints: HashSet::from_iter(vec![endpoint]),
                                 id: None,
-                                flags: flags4.as_ref().map(|f| f[e]),
+                                flags: flags4.as_ref().map(|f| f[e])
+                                    .unwrap_or(PeerInfo::DEFAULT_FLAGS),
                             })
                 );
             }
@@ -46,7 +47,8 @@ impl PEXMessage {
                             |(e, endpoint)| PeerInfo {
                                 endpoints: HashSet::from_iter(vec![endpoint]),
                                 id: None,
-                                flags: flags6.as_ref().map(|f| f[e]),
+                                flags: flags6.as_ref().map(|f| f[e])
+                                    .unwrap_or(PeerInfo::DEFAULT_FLAGS),
                             })
                 );
             }
@@ -60,5 +62,49 @@ impl PEXMessage {
 
             Ok(Self {added, dropped})
         }().context("while parsing PEX message")
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        use BencodeValue::*;
+        let mut added4 = Vec::new();
+        let mut added6 = Vec::new();
+        let mut flags4 = Vec::new();
+        let mut flags6 = Vec::new();
+        let mut dropped4 = Vec::new();
+        let mut dropped6 = Vec::new();
+        for added in &self.added {
+            for endpoint in &added.endpoints {
+                match endpoint {
+                    Endpoint::Ip(std::net::SocketAddr::V4(_)) => {
+                        added4.extend(endpoint.to_compact_4().unwrap());
+                        flags4.push(added.flags);
+                    }
+                    Endpoint::Ip(std::net::SocketAddr::V6(_)) => {
+                        added6.extend(endpoint.to_compact_6().unwrap());
+                        flags6.push(added.flags);
+                    }
+                    _ => (),
+                }
+            }
+        }
+        for dropped in &self.dropped {
+            match dropped {
+                Endpoint::Ip(std::net::SocketAddr::V4(_)) => {
+                    dropped4.extend(dropped.to_compact_4().unwrap());
+                }
+                Endpoint::Ip(std::net::SocketAddr::V6(_)) => {
+                    dropped6.extend(dropped.to_compact_6().unwrap());
+                }
+                _ => (),
+            }
+        }
+        Dictionary(HashMap::from([
+            (Vec::from(b"added"), ByteString(added4)),
+            (Vec::from(b"added6"), ByteString(added6)),
+            (Vec::from(b"added.f"), ByteString(flags4)),
+            (Vec::from(b"added6.f"), ByteString(flags6)),
+            (Vec::from(b"dropped"), ByteString(dropped4)),
+            (Vec::from(b"dropped6"), ByteString(dropped6)),
+        ])).to_bytes()
     }
 }

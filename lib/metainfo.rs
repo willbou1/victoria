@@ -1,11 +1,9 @@
 use anyhow::{Result, anyhow, Context};
-use std::fmt;
 use std::path::PathBuf;
 use std::collections::HashMap;
 
 use crate::{
     bencode::{BencodeValue, BencodeAccessor},
-    util::pretty_size,
     types::*,
 };
 
@@ -38,23 +36,6 @@ impl MetainfoFile {
             _ => return Err(anyhow!("either 'length' or 'files' must be set")),
         }
     }
-
-    fn to_bencode(&self) -> BencodeValue {
-        use BencodeValue::*;
-        let path = self.path.components()
-            .skip(1)
-            .map(|component| ByteString(
-                component
-                    .as_os_str()
-                    .as_encoded_bytes()
-                    .to_vec()
-            ))
-            .collect();
-        Dictionary(HashMap::from([
-            (Vec::from(b"length"), Integer(self.length as i64)),
-            (Vec::from(b"path"), List(path))
-        ]))
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +51,8 @@ pub struct Metadata {
     pub piece_length: usize,
     pub pieces: Vec<Hash>,
     pub files: Vec<MetainfoFile>,
+    pub private: bool,
+    value: BencodeValue,
 
     // derived from metadata
     pub num_pieces: usize,
@@ -124,6 +107,9 @@ impl Metadata {
                 piece_length,
                 pieces,
                 files,
+                private: info.map_optional(b"private", |p| p.to_bool())?
+                    .unwrap_or(false),
+                value: info_val,
 
                 length,
                 last_piece_length,
@@ -134,28 +120,8 @@ impl Metadata {
     }
 
    fn to_bencode(&self) -> BencodeValue {
-        use BencodeValue::*;
-        let mut info = HashMap::from([
-            (Vec::from(b"name"), ByteString(self.name.as_bytes().to_vec())),
-            (Vec::from(b"piece length"), Integer(self.piece_length as i64)),
-            (Vec::from(b"pieces"), ByteString(
-                 self.pieces.iter()
-                     .flat_map(|hash| hash.as_bytes().iter().copied())
-                     .collect(),
-             )),
-        ]);
-       if let Some(file) = self.files.get(0) && file.path.components().count() == 1 {
-            info.insert(Vec::from(b"length"),
-                Integer(self.files[0].length as i64),
-            );
-        } else {
-            info.insert(Vec::from(b"files"), List(
-                self.files.iter()
-                    .map(MetainfoFile::to_bencode)
-                    .collect(),
-            ));
-        }
-        Dictionary(info)
+       // We just use the original bencode value to ensure the hash is preserved
+       self.value.clone()
     } 
 
     pub fn piece_length(&self, index: usize) -> usize {
@@ -239,43 +205,5 @@ impl Metainfo {
             );
         }
         Dictionary(root).to_bytes()
-    }
-}
-
-impl fmt::Display for Metainfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(created_by) = &self.created_by {
-            writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Created by", created_by)?;
-        }
-        write!(f, "{INDENT}{:<LABEL_WIDTH$}", "Tracker tiers")?;
-        for (i, announce) in self.announces.iter().enumerate() {
-            if i != 0 {
-                write!(f, "{INDENT}{:<LABEL_WIDTH$}", "")?;
-            }
-            writeln!(f, "{}. {:?}", i + 1, announce)?;
-        }
-        if let Some(comment) = &self.comment {
-            writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Comment", comment)?;
-        }
-        Ok(())
-    }
-}
-
-
-impl fmt::Display for Metadata {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Name", self.name)?;
-        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{} ({})", "Pieces",
-            self.pieces.len(), pretty_size(self.piece_length))?;
-        writeln!(f, "{INDENT}{:<LABEL_WIDTH$}{}", "Length",
-            pretty_size(self.length))?;
-        write!(f, "{INDENT}{:<LABEL_WIDTH$}", "Files")?;
-        for (i, file) in self.files.iter().enumerate() {
-            if i != 0 {
-                write!(f, "{INDENT}{:<LABEL_WIDTH$}", "")?;
-            }
-            writeln!(f, "{} ({})", file.path.to_string_lossy(), pretty_size(file.length))?;
-        }
-        Ok(())
     }
 }

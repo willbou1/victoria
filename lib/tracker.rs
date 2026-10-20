@@ -163,6 +163,11 @@ impl Trackers {
                     "tracker",
                     url = %url
                 );
+                self.progress_tx.send_modify(|p| {
+                    p.trackers.entry(url.clone()).and_modify(|t| {
+                        t.succeeded = Some(TrackerStatus::Announcing);
+                    });
+                });
                 async {
                     match match url.split(":").next().unwrap() {
                         "http" | "https" => request_http(
@@ -188,7 +193,7 @@ impl Trackers {
                         Ok(response) => {
                             self.progress_tx.send_modify(|p| {
                                 p.trackers.entry(url.clone()).and_modify(|t| {
-                                    t.succeeded = Some(true);
+                                    t.succeeded = Some(TrackerStatus::Succeeded);
                                     t.seeders = response.seeders.map(|s| s as usize);
                                     t.leechers = response.leechers.map(|l| l as usize);
                                     t.interval = Some(Duration::from_secs(response.interval));
@@ -205,7 +210,7 @@ impl Trackers {
                         Err(e) => {
                             self.progress_tx.send_modify(|p| {
                                 p.trackers.entry(url.clone()).and_modify(|t| {
-                                    t.succeeded = Some(false);
+                                    t.succeeded = Some(TrackerStatus::Failed);
                                 });
                             });
                             debug!("Failed to announced {e}");

@@ -19,6 +19,7 @@ pub struct PieceProgress {
     pub index: usize,
     pub num_blocks: usize,
     pub num_obtained_blocks: usize,
+    pub num_verification_failures: usize,
     pub block_bitfield: Bitfield,
 }
 
@@ -100,10 +101,16 @@ impl PeerProgress {
     }
 }
 
+pub enum TrackerStatus {
+    Announcing,
+    Failed,
+    Succeeded,
+}
+
 pub struct TrackerInfo {
     pub url: String,
     pub tier: usize,
-    pub succeeded: Option<bool>,
+    pub succeeded: Option<TrackerStatus>,
     pub seeders: Option<usize>,
     pub leechers: Option<usize>,
     pub interval: Option<Duration>,

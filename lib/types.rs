@@ -133,6 +133,30 @@ impl Endpoint {
             })
             .collect()
     }
+
+    pub fn to_compact_4(&self) -> Option<[u8; 6]> {
+        match self {
+            Endpoint::Ip(SocketAddr::V4(addr)) => {
+                let mut compact = [0; 6];
+                compact[..4].copy_from_slice(&addr.ip().octets());
+                compact[4..].copy_from_slice(&addr.port().to_be_bytes());
+                Some(compact)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn to_compact_6(&self) -> Option<[u8; 18]> {
+        match self {
+            Endpoint::Ip(SocketAddr::V6(addr)) => {
+                let mut compact = [0; 18];
+                compact[..16].copy_from_slice(&addr.ip().octets());
+                compact[16..].copy_from_slice(&addr.port().to_be_bytes());
+                Some(compact)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Endpoint {
@@ -148,7 +172,7 @@ impl fmt::Display for Endpoint {
 pub struct PeerInfo {
     pub id: Option<PeerId>,
     pub endpoints: HashSet<Endpoint>,
-    pub flags: Option<u8>,
+    pub flags: u8,
 }
 
 impl fmt::Display for PeerInfo {
@@ -173,32 +197,32 @@ impl PeerInfo {
 
     pub fn merge(&mut self, other: Self) {
         self.id = self.id.or(other.id);
-        self.flags = self.flags.map(
-            |f| f | other.flags.unwrap_or(0xFF)
-        );
+        self.flags |= other.flags;
         self.endpoints.extend(other.endpoints);
     }
 
-    pub fn prefers_encryption(&self) -> Option<bool> {
-        self.flags.map(|f| (f & 0x01) >= 1)
+    pub fn prefers_encryption(&self) -> bool {
+        (self.flags & 0x01) >= 1
     }
-    pub fn upload_only(&self) -> Option<bool> {
-        self.flags.map(|f| (f & 0x02) >= 1)
+    pub fn upload_only(&self) -> bool {
+        (self.flags & 0x02) >= 1
     }
-    pub fn supports_utp(&self) -> Option<bool> {
-        self.flags.map(|f| (f & 0x04) >= 1)
+    pub fn supports_utp(&self) -> bool {
+        (self.flags & 0x04) >= 1
     }
-    pub fn holepunch_support(&self) -> Option<bool> {
-        self.flags.map(|f| (f & 0x08) >= 1)
+    pub fn holepunch_support(&self) -> bool {
+        (self.flags & 0x08) >= 1
     }
-    pub fn reachable(&self) -> Option<bool> {
-        self.flags.map(|f| (f & 0x10) >= 1)
+    pub fn reachable(&self) -> bool {
+        (self.flags & 0x10) >= 1
     }
+
+    pub const DEFAULT_FLAGS: u8 = 0b00000000;
 
     pub fn new(endpoint: Endpoint) -> Self {
         Self {
             id: None,
-            flags: None,
+            flags: Self::DEFAULT_FLAGS,
             endpoints: HashSet::from_iter(vec![endpoint]),
         }
     }
@@ -206,7 +230,7 @@ impl PeerInfo {
     pub fn from_tracker_bencode_list(list: &BencodeAccessor) -> Result<Vec<Self>> {
         Ok(list.map_list(|peer| Ok(Self {
             id: Some(PeerId::from(peer.required(b"peer id")?.to_n_bytes()?)),
-            flags: None,
+            flags: Self::DEFAULT_FLAGS,
             endpoints: HashSet::from_iter(vec![
                 Endpoint::from_str(
                     peer.required(b"ip")?.as_str()?,

@@ -270,7 +270,9 @@ where
     }
 
     fn toggle_sub(&mut self) {
-        self.show_sub = !self.show_sub;
+        if self.show_sections.len() != 0 {
+            self.show_sub = !self.show_sub;
+        }
     }
 
     fn toggle_section(&mut self, index: usize) {
@@ -280,8 +282,7 @@ where
                 self.show_sub = false;
             }
         } else {
-            self.show_sub = true;
-            self.show_sections[index] = true;
+            self.show_section(index);
         }
     }
 

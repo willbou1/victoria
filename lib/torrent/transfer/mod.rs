@@ -270,6 +270,7 @@ impl Transfer {
                                     block_bitfield: piece.to_bitfield(),
                                     num_blocks: piece.num_blocks(),
                                     num_obtained_blocks: piece.obtained_blocks(),
+                                    num_verification_failures: piece.num_verification_failures(),
                                 })
                                 .collect();
                         }

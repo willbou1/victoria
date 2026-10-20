@@ -39,7 +39,7 @@ async fn main() {
             .json()
             .with_writer(non_blocking)
             .with_filter(
-                EnvFilter::new("debug")
+                EnvFilter::new("trace")
                     .add_directive("hyper=warn".parse().unwrap())
                     .add_directive("reqwest=warn".parse().unwrap())
             );

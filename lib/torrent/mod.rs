@@ -11,7 +11,7 @@ use tokio::{
     sync::watch,
     io::AsyncWriteExt,
 };
-use tracing::{info, warn, debug, Instrument, Span};
+use tracing::{info, warn, debug, trace, Instrument, Span};
 use transfer::Transfer;
 use url::Url;
 use std::{
@@ -138,11 +138,11 @@ impl Torrent {
     ) -> Result<Option<Self>> {
         let file = fs::read(path).await?;
         let (metainfo, metadata_bytes) = Metainfo::from_bytes(&file)?;
-        info!("Parsed metainfo:\n{}", metainfo);
+        info!("Parsed metainfo");
 
         let metadata_bytes = metadata_bytes.ok_or(anyhow!("No metadata in metainfo"))?;
         let metadata = Metadata::from_bytes(&metadata_bytes)?;
-        info!("Parsed metadata:\n{}", metadata);
+        info!("Parsed metadata");
 
         let info_hash = Hash::from(Sha1::digest(&metadata_bytes).into());
         if Self::check_already_exists(&config_rx, &info_hash).await? {
@@ -187,12 +187,12 @@ impl Torrent {
         let (metainfo, metadata_bytes) = Metainfo::from_bytes(&file)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         {}
-        info!("Parsed metainfo:\n{}", metainfo);
+        info!("Parsed metainfo");
 
         if let Some(metadata_bytes) = metadata_bytes {
             let metadata = Metadata::from_bytes(&metadata_bytes)
                 .map_err(|e| anyhow::anyhow!(e))?;
-            info!("Parsed metadata:\n{}", metadata);
+            info!("Parsed metadata");
 
             let info_hash = Hash::from(Sha1::digest(&metadata_bytes).into());
             let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes);
@@ -309,10 +309,19 @@ impl Torrent {
         })
     }
     async fn write_metainfo(&self) -> Result<()> {
-        let path = self.config_rx.borrow().data_path
-            .join(self.info_hash.to_string())
-            .join(format!("{}.torrent", self.display_name));
-        fs::create_dir_all(&path.parent().unwrap()).await?;
+        let dir = self.config_rx.borrow().data_path
+            .join(self.info_hash.to_string());
+        fs::create_dir_all(&dir).await?;
+        let mut entries = fs::read_dir(&dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().is_some_and(|ext| ext == "torrent")
+            {
+                fs::remove_file(path).await?;
+            }
+        }
+        let path = dir.join(format!("{}.torrent", self.display_name));
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -507,9 +516,10 @@ impl Torrent {
                     }
 
                     if let Some(metadata_bytes) = self.metadata.place(index, piece, false) {
-                        let metadata = Metadata::from_bytes(&metadata_bytes)
-                            .map_err(|e| anyhow::anyhow!("Error parsing metadata: {e}"))?;
-                        info!("Got metadata:\n{metadata}");
+                        trace!("Got metadata bytes:\n{}", String::from_utf8_lossy(&metadata_bytes));
+                        let metadata = Metadata::from_bytes(&metadata_bytes)?;
+                        info!("Parsed metadata from extension");
+
                         let mut transfer = Transfer::new(
                             metadata,
                             self.info_hash,

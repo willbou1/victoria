@@ -52,6 +52,7 @@ pub struct Piece {
     downloaded_blocks: usize,
     downloading_blocks: usize,
     written: bool,
+    verification_failures: usize,
     hash: Hash,
     length: usize,
     block_size: usize,
@@ -77,6 +78,7 @@ impl Piece {
             blocks,
             downloaded_blocks: 0,
             downloading_blocks: 0,
+            verification_failures: 0,
             written,
             hash,
             length,
@@ -98,6 +100,7 @@ impl Piece {
             blocks,
             downloaded_blocks: 0,
             downloading_blocks: 0,
+            verification_failures: 0,
             written: false,
             hash,
             length: data.len(),
@@ -117,6 +120,10 @@ impl Piece {
 
     pub fn num_blocks(&self) -> usize {
         self.blocks.len()
+    }
+
+    pub fn num_verification_failures(&self) -> usize {
+        self.verification_failures
     }
 
     pub fn num_downloading(&self) -> HashMap<PeerId, usize> {
@@ -244,6 +251,8 @@ impl Piece {
                 let correct = self.verify(&piece);
                 if !correct {
                     self.blocks.fill(Block::default());
+                    self.downloaded_blocks = 0;
+                    self.verification_failures += 1;
                     return None;
                 }
                 // TODO: we may wanna handle write error gracefully and signal to piece that we should write

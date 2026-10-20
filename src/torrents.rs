@@ -17,6 +17,7 @@ use crossterm::{
     terminal,
     cursor::{MoveTo},
     event::{Event, KeyCode, KeyModifiers, EnableMouseCapture, DisableMouseCapture, self},
+    style::Stylize,
 };
 use interprocess::local_socket::{
     tokio::prelude::*,
@@ -58,20 +59,24 @@ impl Row for TrackerInfo {
         use Alignment::*;
         &[
             Column {
-                value: |tracker, _| tracker.succeeded.map(
-                    |s| String::from(if s {"✓"} else {"✗"})
+                value: |tracker, _| tracker.succeeded.as_ref().map(
+                    |s| match s {
+                        TrackerStatus::Announcing => "↻",
+                        TrackerStatus::Succeeded => "✓",
+                        TrackerStatus::Failed => "✗",
+                    }.to_string()
                 ).unwrap_or_default(),
-                ..Column::DEFAULT
-            },
-            Column {
-                header: "Url",
-                value: |tracker, _| tracker.url.clone(),
                 ..Column::DEFAULT
             },
             Column {
                 header: "T",
                 alignment: Right,
                 value: |tracker, _| tracker.tier.to_string(),
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "Url",
+                value: |tracker, _| tracker.url.clone(),
                 ..Column::DEFAULT
             },
             Column {
@@ -336,6 +341,15 @@ impl Row for PieceProgress {
                 header: "Tot",
                 alignment: Right,
                 value: |piece, _| piece.num_blocks.to_string(),
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "X",
+                alignment: Right,
+                value: |piece, _| {
+                    let num = piece.num_verification_failures;
+                    if num > 0 {num.to_string().red().to_string()} else {num.to_string()}
+                },
                 ..Column::DEFAULT
             },
         ]

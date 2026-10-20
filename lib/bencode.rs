@@ -566,5 +566,9 @@ impl<'a> BencodeAccessor<'a> {
             kind: BencodeAccessErrorKind::FailedIntegerConversion { error },
         })
     }
+
+    pub fn to_bool(&self) -> Result<bool, BencodeAccessError> {
+        self.to_i64().map(|i| i != 0)
+    }
 }
 

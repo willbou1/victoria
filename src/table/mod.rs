@@ -184,6 +184,8 @@ where
     flex_total: usize,
     render: String,
     widths: Vec<usize>,
+    row: usize,
+    col: usize,
 }
 
 impl<R> Table<R>
@@ -200,6 +202,8 @@ where
             flex_total: R::columns().iter()
                 .map(|c| c.flex.unwrap_or(0))
                 .sum(),
+            row: 0,
+            col: 0,
         }
     }
 
@@ -212,6 +216,7 @@ where
     }
 
     fn render_newline(&mut self) {
+        self.row += 1;
         self.render.push('\r');
         self.render.push('\n');
     } 
@@ -244,6 +249,7 @@ where
         self.render.push('┤');
         self.reset_color();
         self.render.push(' ');
+        let mut col = self.col + self.padding + 2;
         for (s, section) in R::sub_sections().iter().enumerate() {
             self.render_color(
                 if state.show_sections[s] {Color::Green} else {Color::White}
@@ -255,6 +261,9 @@ where
             self.render.push_str(section.header());
             self.render.push(' ');
             self.reset_color();
+            let width = section.header().chars().count() + 4;
+            state.place_section(s, col, self.row, width, 1);
+            col += width + 1;
         }
         self.render_color(
             if self.focused {Color::Green} else {Color::White}
@@ -329,6 +338,8 @@ where
                 state.sub_table_states[i].as_mut(),
                 width - 2 * (self.padding + 1),
             );
+            state.sub_table_states[i].as_mut()
+                .map(|s| s.position(self.col + self.padding, self.row));
 
             for line in sub.lines() {
                 self.render_v_separator(state.marked);
@@ -371,6 +382,9 @@ where
     where
         I: IntoIterator<Item = &'a R>,
     {
+        self.row = state.bounding_box.row;
+        let first_row = self.row;
+        self.col = state.bounding_box.col + 1;
         let rows: Vec<_> = rows.into_iter().collect();
         state.reconcile(rows.iter().map(|r| r.id()).collect());
         self.render.clear();
@@ -436,6 +450,7 @@ where
                 remaining_flex -= flex;
             }
         }
+        let width = self.widths.iter().sum::<usize>() + separator_width;
 
         self.render_h_sparator(Junction::Top, None);
         self.render_cells(
@@ -446,6 +461,8 @@ where
         self.render_h_sparator(Junction::Center, None);
 
         for (r, row) in rows.iter().enumerate() {
+            let first_row = self.row;
+            let row_state = state.row_states.get_mut(&row.id()).unwrap();
             self.render_cells(
                 &filled_columns.iter().map(|c| c[r + 1].clone()).collect::<Vec<_>>(),
                 if let Some(hash) = state.selected_row && hash == row.id() && self.focused {
@@ -453,19 +470,16 @@ where
                 } else {
                     Color::White
                 },
-                state.row_states.get(&row.id()).map_or(false, |r| r.marked)
+                row_state.marked,
             );
-            if state.row_states.get(&row.id()).map_or(false, |r| r.show_sub) {
-                self.render_h_sparator(Junction::SubTop, state.row_states.get_mut(&row.id()));
-                self.render_sub(
-                    width,
-                    row,
-                    state.row_states.get_mut(&row.id()).unwrap()
-                );
+            if row_state.show_sub {
+                self.render_h_sparator(Junction::SubTop, Some(row_state));
+                self.render_sub(width, row, row_state);
                 if r != rows.len() - 1 {
                     self.render_h_sparator(Junction::SubBottom, None);
                 }
             }
+            row_state.place(self.col, first_row, width - 2, self.row - first_row);
         }
 
         let bottom_sub = rows.last().map_or(
@@ -490,6 +504,8 @@ where
         } else {
             self.render_h_sparator(Junction::Bottom, None);
         }
+
+        state.scale(width, self.row - first_row - 1);
         &self.render
     }
 }

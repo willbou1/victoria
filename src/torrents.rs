@@ -16,7 +16,7 @@ use crossterm::{
     execute,
     terminal,
     cursor::{MoveTo},
-    event::{Event, KeyCode, KeyModifiers, EnableMouseCapture, DisableMouseCapture, self},
+    event::{Event, KeyCode, KeyModifiers, EnableMouseCapture, DisableMouseCapture, MouseEventKind, MouseButton, self},
     style::Stylize,
 };
 use interprocess::local_socket::{
@@ -674,42 +674,39 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
                 while event::poll(Duration::ZERO)? {
                     match event::read()? {
                         Event::Key(key) => {
-                            if key_state == KeyState::ToggleSection && let KeyCode::Char(key) = key.code {
+                            use KeyCode::*;
+                            if key_state == KeyState::ToggleSection && let Char(key) = key.code {
                                 state.handle_event(TableEvent::ToggleSection(key));
                                 key_state = KeyState::Global;
-                            } else if key_state == KeyState::FocusSection && let KeyCode::Char(key) = key.code {
+                            } else if key_state == KeyState::FocusSection && let Char(key) = key.code {
                                 state.handle_event(TableEvent::FocusSection(key));
                                 key_state = KeyState::Global;
                             } else {
                                 key_state = KeyState::Global;
                                 match key.code {
-                                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                                        break 'main,
-                                    KeyCode::Char('q') =>
-                                        break 'main,
-                                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'main,
+                                    Char('q') => break 'main,
+                                    Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) =>
                                         vertical_position += 3,
-                                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                    Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) =>
                                         vertical_position = vertical_position.saturating_sub(3),
 
-                                    KeyCode::Char('t') =>
-                                        key_state = KeyState::ToggleSection,
-                                    KeyCode::Char('f') =>
-                                        key_state = KeyState::FocusSection,
+                                    Char('t') => key_state = KeyState::ToggleSection,
+                                    Char('f') => key_state = KeyState::FocusSection,
 
-                                    KeyCode::Char('d') | KeyCode::Char('r') => {
+                                    Char('d') | Char('r') => {
                                         if let Some(Focus {row: torrent_hash, ..}) = state.follow_focus() {
                                             if let Some(index) = torrent_tasks
                                                 .iter()
                                                 .position(|tt| tt.rx.borrow().id() == torrent_hash)
                                             {
                                                 match key.code {
-                                                    KeyCode::Char('d') => {
+                                                    Char('d') => {
                                                         let tt = torrent_tasks.remove(index);
                                                         let _ = tt.tx.send(Command::Delete).await;
                                                         tt.task.await??;
                                                     }
-                                                    KeyCode::Char('r') => {
+                                                    Char('r') => {
                                                         let tt = &torrent_tasks[index];
                                                         let _ = tt.tx.send(Command::ReloadTrackers).await;
                                                     }
@@ -718,33 +715,33 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
                                             }
                                         }
                                     }
-                                    KeyCode::Esc =>
-                                        state.handle_event(TableEvent::UnfocusSection),
-                                    KeyCode::Char('m')=>
-                                        state.handle_event(TableEvent::Mark),
-                                    KeyCode::Char('u')=>
-                                        state.handle_event(TableEvent::Unmark),
-                                    KeyCode::Char('+') =>
-                                        state.handle_event(TableEvent::ToggleTotal),
-                                    KeyCode::Char('g') | KeyCode::KeypadBegin =>
-                                        state.handle_event(TableEvent::First),
-                                    KeyCode::Char('G') | KeyCode::End =>
-                                        state.handle_event(TableEvent::Last),
-                                    KeyCode::Char('j') | KeyCode::Down =>
-                                        state.handle_event(TableEvent::Down),
-                                    KeyCode::Char('k') | KeyCode::Up =>
-                                        state.handle_event(TableEvent::Up),
-                                    KeyCode::Tab =>
-                                        state.handle_event(TableEvent::ToggleSub),
+                                    Esc => state.handle_event(TableEvent::UnfocusSection),
+                                    Char('m')=> state.handle_event(TableEvent::Mark),
+                                    Char('u')=> state.handle_event(TableEvent::Unmark),
+                                    Char('+') => state.handle_event(TableEvent::ToggleTotal),
+                                    Char('g') | KeypadBegin => state.handle_event(TableEvent::First),
+                                    Char('G') | End => state.handle_event(TableEvent::Last),
+                                    Char('j') | Down => state.handle_event(TableEvent::Down),
+                                    Char('k') | Up => state.handle_event(TableEvent::Up),
+                                    Tab => state.handle_event(TableEvent::ToggleSub(None)),
                                     _ => (),
                                 }
                             }
                         }
                         Event::Mouse(mouse) => {
+                            use MouseEventKind::*;
+                            use MouseButton::*;
                             match mouse.kind {
-                                event::MouseEventKind::ScrollDown => vertical_position += 3,
-                                event::MouseEventKind::ScrollUp =>
-                                    vertical_position = vertical_position.saturating_sub(3),
+                                ScrollDown => vertical_position += 3,
+                                ScrollUp => vertical_position = vertical_position.saturating_sub(3),
+                                Down(Left) => state.handle_event(TableEvent::Select(
+                                    mouse.column as usize,
+                                    mouse.row as usize + vertical_position,
+                                )),
+                                Down(Right) => state.handle_event(TableEvent::ToggleSub(Some((
+                                    mouse.column as usize,
+                                    mouse.row as usize + vertical_position,
+                                )))),
                                 _ => (),
                             }
                         }
@@ -771,10 +768,7 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
                     }
                 }
 
-                execute!(
-                    out,
-                    MoveTo(0, 0),
-                )?;
+                execute!(out, MoveTo(0, 0))?;
                 write!(out, "{frame}")?;
                 out.flush()?;
             }

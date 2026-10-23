@@ -7,7 +7,7 @@ use std::{
 };
 use tracing::{debug};
 
-use crate::{
+use crate::libvictoria::{
     proto::{bit_torrent::Message, metadata::MetadataMessage},
     types::*,
 };

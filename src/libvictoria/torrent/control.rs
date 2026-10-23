@@ -4,17 +4,19 @@ use std::{
     path::PathBuf,
 };
 
-use crate::{
+use crate::libvictoria::{
     types::*,
     bitfield::Bitfield,
 };
 
+#[derive(Debug)]
 pub struct Config {
     pub client_id: PeerId,
     pub download_path: PathBuf,
     pub data_path: PathBuf,
 }
 
+#[derive(Debug)]
 pub struct PieceProgress {
     pub index: usize,
     pub num_blocks: usize,
@@ -23,6 +25,7 @@ pub struct PieceProgress {
     pub block_bitfield: Bitfield,
 }
 
+#[derive(Debug)]
 pub struct ConnectionProgress {
     pub down_speed: usize,
     pub up_speed: usize,
@@ -37,6 +40,7 @@ pub struct ConnectionProgress {
     pub reject_rate: usize,
 }
 
+#[derive(Debug)]
 pub struct TransferProgress {
     pub files: Vec<FileInfo>,
     pub down_speed: usize,
@@ -63,12 +67,14 @@ impl TransferProgress {
     }
 }
 
+#[derive(Debug)]
 pub struct FileInfo {
     pub relative_path: String,
     pub size: usize,
     // TODO priority
 }
 
+#[derive(Debug)]
 pub struct PeerProgress {
     pub id: PeerId,
     pub client: Option<String>,
@@ -101,12 +107,14 @@ impl PeerProgress {
     }
 }
 
+#[derive(Debug)]
 pub enum TrackerStatus {
     Announcing,
     Failed,
     Succeeded,
 }
 
+#[derive(Debug)]
 pub struct TrackerInfo {
     pub url: String,
     pub tier: usize,
@@ -133,6 +141,7 @@ impl TrackerInfo {
     }
 }
 
+#[derive(Debug)]
 pub struct Progress {
     pub num_discovery_attempts: usize,
     pub num_peers: usize,
@@ -144,6 +153,7 @@ pub struct Progress {
     pub trackers: HashMap<String, TrackerInfo>,
 }
 
+#[derive(Debug)]
 pub enum Command {
     Stop,
     Pause,

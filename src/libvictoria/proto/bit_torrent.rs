@@ -14,8 +14,12 @@ use std::{
 };
 use tracing::{trace};
 
-use crate::{
-    bencode::{BencodeAccessor, BencodeValue}, bitfield::Bitfield, torrent::Event, types::*
+use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+
+use crate::libvictoria::{
+    bitfield::Bitfield,
+    torrent::Event,
+    types::*
 };
 use super::{
     metadata::{MetadataMessage},

@@ -20,7 +20,7 @@ use std::{
     path::Path,
 };
 
-use crate::{
+use crate::libvictoria::{
     metainfo::{Metadata, Metainfo},
     proto::{bit_torrent::{BitTorrent, Message},
     metadata::MetadataMessage,

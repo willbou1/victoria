@@ -6,7 +6,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6, Ipv6Addr}
 };
 
-use crate::bencode::{BencodeAccessor, BencodeValue};
+use bencodedit::{accessor::BencodeAccessor, BencodeValue};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash(pub [u8; 20]);

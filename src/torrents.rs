@@ -24,14 +24,11 @@ use interprocess::local_socket::{
     GenericNamespaced, ListenerOptions, ToNsName,
 };
 use directories::{BaseDirs, UserDirs};
-
-use libvictoria::{
-    bencode::{BencodeAccessor, BencodeValue}, torrent::{Torrent, control::*}, types::*, util::*
+use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+use super::libvictoria::{
+    torrent::{Torrent, control::*}, types::*, util::*
 };
-use super::{
-    table::*,
-    table::state::*,
-};
+use whodatrow::{*, state::*};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum ProgressSection {

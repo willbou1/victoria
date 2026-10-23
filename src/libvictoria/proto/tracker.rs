@@ -10,10 +10,9 @@ use std::{
     time::{Duration},
 };
 
-use crate::{
-    bencode::{BencodeAccessor, BencodeValue},
-    types::*,
-};
+use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+
+use crate::libvictoria::types::*;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Event {

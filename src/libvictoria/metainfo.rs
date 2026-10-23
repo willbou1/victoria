@@ -2,8 +2,9 @@ use anyhow::{Result, anyhow, Context};
 use std::path::PathBuf;
 use std::collections::HashMap;
 
-use crate::{
-    bencode::{BencodeValue, BencodeAccessor},
+use bencodedit::{BencodeValue, accessor::BencodeAccessor};
+
+use crate::libvictoria::{
     types::*,
 };
 

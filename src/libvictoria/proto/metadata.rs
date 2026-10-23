@@ -3,9 +3,7 @@ use std::{
     collections::HashMap,
 };
 
-use crate::{
-    bencode::{BencodeValue, BencodeAccessor},
-};
+use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
 // BEP 9: https://www.bittorrent.org/beps/bep_0009.html 
 

@@ -6,7 +6,7 @@ use std::{
     time::{Duration},
 };
 
-use crate::{
+use crate::libvictoria::{
     bitfield::Bitfield,
     proto::bit_torrent::{Message},
     types::*,

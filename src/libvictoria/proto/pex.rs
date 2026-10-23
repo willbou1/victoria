@@ -3,10 +3,9 @@ use std::{
     collections::{HashSet, HashMap},
 };
 
-use crate::{
-    bencode::{BencodeAccessor, BencodeValue},
-    types::*,
-};
+use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+
+use crate::libvictoria::types::*;
 
 // BEP 11: https://www.bittorrent.org/beps/bep_0011.html#bep-40
 

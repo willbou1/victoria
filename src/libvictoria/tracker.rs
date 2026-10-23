@@ -9,7 +9,7 @@ use tokio::sync::{
     watch,
 };
 
-use crate::{
+use crate::libvictoria::{
     torrent,
     torrent::control::*,
     proto::tracker::{TrackerResponse, request_http, request_udp, self},

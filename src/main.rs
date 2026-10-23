@@ -1,8 +1,8 @@
 // TODO remember to keep an eye on dead code once in a while
 #![allow(dead_code)]
 
-mod table;
 mod torrents;
+mod libvictoria;
 
 use std::{
     env,

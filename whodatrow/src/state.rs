@@ -166,7 +166,9 @@ where
             .find(|(_, state)| state.bounding_box.intersects(col, row))
             .map(|(h, _)| h).copied()
         {
+            // TODO check if really necessary
             self.unfocus_branch();
+
             self.selected_row = Some(hash);
             for (s, sub_state) in self.row_states.get_mut(&hash)
                 .unwrap().sub_table_states.iter_mut().enumerate()

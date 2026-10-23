@@ -13,7 +13,7 @@ use std::{
 };
 use tracing::{info, debug, trace};
 
-use crate::{
+use crate::libvictoria::{
     bitfield::Bitfield,
     metainfo::Metadata,
     proto::{

@@ -19,8 +19,6 @@ pub struct Config {
 #[derive(Debug)]
 pub struct PieceProgress {
     pub index: usize,
-    pub num_blocks: usize,
-    pub num_obtained_blocks: usize,
     pub num_verification_failures: usize,
     pub block_bitfield: Bitfield,
 }
@@ -53,8 +51,8 @@ pub struct TransferProgress {
 }
 
 impl TransferProgress {
-    pub fn percentage(&self) -> f32 {
-        self.downloaded as f32 * 100. / self.size as f32
+    pub fn percentage(&self) -> f64 {
+        self.downloaded as f64 * 100. / self.size as f64
     }
 
     pub fn eta(&self) -> Option<Duration> {
@@ -68,9 +66,19 @@ impl TransferProgress {
 }
 
 #[derive(Debug)]
+pub enum FilePriority {
+    Low,
+    Normal,
+    Medium,
+    High,
+}
+
+#[derive(Debug)]
 pub struct FileInfo {
     pub relative_path: String,
     pub size: usize,
+    pub piece_bitfield: Bitfield,
+    pub priority: FilePriority,
     // TODO priority
 }
 

@@ -1,9 +1,10 @@
-use std::fmt;
+use std::{fmt, range::Range};
 
 #[derive(Debug, Clone)]
 pub struct Bitfield {
     buffer: Vec<u8>,
     size: usize,
+    num_set: usize,
 }
 
 impl Bitfield {
@@ -11,6 +12,7 @@ impl Bitfield {
         Self {
             buffer: vec![0; (size + 7) / 8],
             size: size,
+            num_set: 0,
         }
     }
 
@@ -19,10 +21,13 @@ impl Bitfield {
     }
 
     pub fn from_vec(vec: Vec<u8>) -> Self {
-        Self {
+        let mut bitfield = Self {
             size: vec.len() * 8,
             buffer: vec,
-        }
+            num_set: 0,
+        };
+        bitfield.num_set = bitfield.count_set();
+        bitfield
     }
 
     pub fn num_bytes(&self) -> usize {
@@ -33,32 +38,26 @@ impl Bitfield {
         &self.buffer
     }
 
-    fn bit(index: usize) -> u8 {
-        0b1000_0000 >> (index % 8)
-    }
-
-    pub fn has(&self, index: usize) -> bool {
+    pub fn is_set(&self, index: usize) -> bool {
         self.buffer[index / 8] & Self::bit(index) != 0
     }
 
     pub fn num_set(&self) -> usize {
-        let mut num = 0;
-        for b in 0..self.len() {
-            if self.has(b) {
-                num += 1;
-            }
-        }
-        num
+        self.num_set
     }
 
     pub fn set(&mut self, index: usize) {
-        self.buffer[index / 8] |= Self::bit(index);
+        if !self.is_set(index) {
+            self.buffer[index / 8] |= Self::bit(index);
+            self.num_set += 1;
+        }
     }
 
     pub fn fill(&mut self, val: bool) {
         for byte in self.buffer.iter_mut() {
             *byte = if val {0xFF} else {0};
         }
+        self.num_set = self.size;
     }
 
     pub fn unset(&mut self, index: usize) {
@@ -67,6 +66,41 @@ impl Bitfield {
 
     pub fn set_bytes(&mut self, bitfield: &[u8]) {
         self.buffer.copy_from_slice(bitfield);
+        self.num_set = self.count_set();
+    }
+
+    pub fn percentage(&self) -> f64 {
+        if self.size == 0 {
+            return 100.;
+        }
+        self.num_set as f64 * 100. / self.size as f64
+    }
+
+    pub fn subfield(&self, range: Range<usize>) -> Self {
+        if range.start >= self.size || range.end > self.size {
+            panic!("The range of the subfield exceeds the size of the bitfield");
+        }
+        let mut sub = Self::new(range.end - range.start);
+        for b in range {
+            if self.is_set(b) {
+                sub.set(b - range.start);
+            }
+        }
+        sub
+    }
+
+    fn count_set(&self) -> usize {
+        let mut num = 0;
+        for b in 0..self.len() {
+            if self.is_set(b) {
+                num += 1;
+            }
+        }
+        num
+    }
+
+    fn bit(index: usize) -> u8 {
+        0b1000_0000 >> (index % 8)
     }
 }
 
@@ -83,9 +117,9 @@ impl fmt::Display for Bitfield {
             let end = ((c + 1) * len + chunks - 1) / chunks;
             
             let filled = if f.alternate() {
-                (start..end).any(|i| self.has(i))
+                (start..end).any(|i| self.is_set(i))
             } else {
-                (start..end).all(|i| self.has(i))
+                (start..end).all(|i| self.is_set(i))
             };
             
             if filled {

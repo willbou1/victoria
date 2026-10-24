@@ -9,4 +9,3 @@ mod timer;
 pub mod types;
 pub mod bitfield;
 pub mod torrent;
-pub mod util;

@@ -3,6 +3,7 @@
 
 mod torrents;
 mod libvictoria;
+mod util;
 
 use std::{
     env,

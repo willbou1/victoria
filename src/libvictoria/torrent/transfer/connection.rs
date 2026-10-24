@@ -150,7 +150,7 @@ impl Connection {
         Ok(())
     }
     pub fn has_piece(&self, index: usize) -> bool {
-        self.piece_bitfield.has(index)
+        self.piece_bitfield.is_set(index)
     }
     pub fn set_piece(&mut self, index: usize) {
         self.piece_bitfield.set(index)

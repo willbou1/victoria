@@ -60,6 +60,10 @@ pub enum BencodeAccessErrorKind {
         index: usize,
         len: usize,
     },
+    #[error("{error}")]
+    CustomError {
+        error: anyhow::Error,
+    },
 }
 
 #[derive(Debug)]
@@ -179,6 +183,10 @@ impl<'a> BencodeAccessor<'a> {
         })
     }
 
+    pub fn to_n_bytes<const N: usize>(&self) -> Result<[u8; N], BencodeAccessError> {
+        self.as_n_bytes::<N>().map(|b| b.to_owned())
+    }
+
     pub fn as_bytes(&self) -> Result<&'a [u8], BencodeAccessError> {
         self.value.as_bytes().ok_or(BencodeAccessError {
             tree: format!("{:?}", self.root),
@@ -201,10 +209,6 @@ impl<'a> BencodeAccessor<'a> {
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, BencodeAccessError> {
         self.as_bytes().map(|s| s.to_vec())
-    }
-
-    pub fn to_n_bytes<const N: usize>(&self) -> Result<[u8; N], BencodeAccessError> {
-        self.as_n_bytes().map(|s| s.to_owned())
     }
 
     pub fn to_string(&self) -> Result<String, BencodeAccessError> {
@@ -235,5 +239,17 @@ impl<'a> BencodeAccessor<'a> {
 
     pub fn to_bool(&self) -> Result<bool, BencodeAccessError> {
         self.to_i64().map(|i| i != 0)
+    }
+
+    pub fn wrap_err(&self, error: anyhow::Error) -> BencodeAccessError {
+        BencodeAccessError {
+            tree: format!("{:?}", self.root),
+            path: self.path.clone(),
+            kind: BencodeAccessErrorKind::CustomError { error },
+        }
+    }
+
+    pub fn err_out<T>(&self, error: anyhow::Error) -> Result<T, BencodeAccessError> {
+        Err(self.wrap_err(error))
     }
 }

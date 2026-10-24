@@ -26,9 +26,10 @@ use interprocess::local_socket::{
 use directories::{BaseDirs, UserDirs};
 use bencodedit::{accessor::BencodeAccessor, BencodeValue};
 use super::libvictoria::{
-    torrent::{Torrent, control::*}, types::*, util::*
+    torrent::{Torrent, control::*}, types::*
 };
 use whodatrow::{*, state::*};
+use super::util::*;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum ProgressSection {
@@ -115,7 +116,7 @@ impl Row for TrackerInfo {
     }
 
     fn sub_sections() -> &'static [&'static dyn SubSection<Self>]
-    where Self: Sized,
+        where Self: Sized,
     {
         &[
             &TextSubSection {
@@ -246,7 +247,7 @@ impl Row for PeerProgress {
     }
 
     fn sub_sections() -> &'static [&'static dyn SubSection<Self>]
-    where Self: Sized,
+        where Self: Sized,
     {
         &[
             &TextSubSection {
@@ -288,9 +289,36 @@ impl Row for FileInfo {
                 ..Column::DEFAULT
             },
             Column {
+                header: "Priority",
+                value: |file, _| {
+                    use FilePriority::*;
+                    match file.priority {
+                        Low => "Low",
+                        Normal => "Normal",
+                        Medium => "Medium",
+                        High => "High",
+                    }.to_string()
+                },
+                ..Column::DEFAULT
+            },
+            Column {
                 header: "Size",
                 alignment: Right,
                 value: |file, _| pretty_size(file.size),
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "Pieces",
+                flex: Some(1),
+                value: |file, width|
+                    format!("{:WIDTH$}", file.piece_bitfield, WIDTH = width.unwrap()),
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "%",
+                alignment: Right,
+                value: |file, _|
+                    pretty_percentage(file.piece_bitfield.percentage()),
                 ..Column::DEFAULT
             },
         ]
@@ -324,20 +352,19 @@ impl Row for PieceProgress {
             Column {
                 header: "%",
                 alignment: Right,
-                value: |piece, _|
-                    format!("{:.2}", piece.num_obtained_blocks as f64 * 100. / piece.num_blocks as f64),
+                value: |piece, _| pretty_percentage(piece.block_bitfield.percentage()),
                 ..Column::DEFAULT
             },
             Column {
                 header: "Num",
                 alignment: Right,
-                value: |piece, _| piece.num_obtained_blocks.to_string(),
+                value: |piece, _| piece.block_bitfield.num_set().to_string(),
                 ..Column::DEFAULT
             },
             Column {
                 header: "Tot",
                 alignment: Right,
-                value: |piece, _| piece.num_blocks.to_string(),
+                value: |piece, _| piece.block_bitfield.len().to_string(),
                 ..Column::DEFAULT
             },
             Column {
@@ -433,7 +460,7 @@ impl Row for Progress {
                 alignment: Right,
                 value: |prog, _|
                     prog.transfer.as_ref().map(
-                        |t|  format!("{:.2}", t.percentage())
+                        |t| pretty_percentage(t.percentage())
                     ).unwrap_or_default(),
                 ..Column::DEFAULT
             },
@@ -454,7 +481,7 @@ impl Row for Progress {
     }
 
     fn sub_sections() -> &'static [&'static dyn SubSection<Self>]
-    where Self: Sized,
+        where Self: Sized,
     {
         &[
             &TableSubSection {

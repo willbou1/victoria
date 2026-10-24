@@ -1,6 +1,9 @@
 use anyhow::{Result, anyhow, Context};
-use std::path::PathBuf;
-use std::collections::HashMap;
+use std::{
+    path::PathBuf,
+    collections::HashMap,
+    range::Range,
+};
 
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
@@ -14,6 +17,9 @@ const INDENT: &str = "    ";
 pub struct MetainfoFile {
     pub path: PathBuf,
     pub length: usize,
+
+    // derived from metadata
+    pub pieces: Range<usize>,
 }
 
 impl MetainfoFile {
@@ -24,6 +30,7 @@ impl MetainfoFile {
                 MetainfoFile {
                     path: PathBuf::from(name),
                     length: length.to_integer()?,
+                    pieces: Default::default(),
                 }
             ]),
             (_, Some(files)) => Ok(
@@ -32,9 +39,10 @@ impl MetainfoFile {
                         file.required(b"path")?.as_str_list()?.join("/")
                     ),
                     length: file.required(b"length")?.to_integer()?,
+                    pieces: Default::default(),
                 }))?
             ),
-            _ => return Err(anyhow!("either 'length' or 'files' must be set")),
+            _ => root.err_out(anyhow!("either 'length' or 'files' must be set"))?,
         }
     }
 }
@@ -68,7 +76,7 @@ impl Metadata {
             let info_val = BencodeValue::from_bytes(encoded)?.0;
             let info = BencodeAccessor::new(&info_val);
             let name = info.required(b"name")?.to_string()?;
-            let files = MetainfoFile::from_bencode(&info, &name)?;
+            let mut files = MetainfoFile::from_bencode(&info, &name)?;
             let piece_length: usize = info.required(b"piece length")?.to_integer()?;
             let pieces: Vec<_> = info.required(b"pieces")?.as_bytes()?
                 .chunks(20).map(|chunk| Hash::from(chunk.try_into().unwrap()))
@@ -79,6 +87,7 @@ impl Metadata {
             let last_piece_length = length - piece_length * (num_pieces - 1);
 
             let mut piece_files = Vec::new();
+            let mut first_file_pieces = HashMap::new();
             for p in 0..num_pieces {
                 let mut file_offset = 0;
                 let piece_start = p * piece_length;
@@ -91,6 +100,10 @@ impl Metadata {
                     let overlap_start = piece_start.max(file_start);
                     let overlap_end = piece_end.min(file_end);
                     if overlap_start < overlap_end {
+                        if !first_file_pieces.contains_key(&f) {
+                            first_file_pieces.insert(f, p);
+                        }
+
                         files_for_piece.push(PieceFile {
                             file_index: f,
                             piece_offset: overlap_start - piece_start,
@@ -99,6 +112,15 @@ impl Metadata {
                         });
                     }
                     file_offset = file_end;
+                }
+
+                for f in first_file_pieces.keys().copied()
+                    .filter(|&f| files_for_piece.iter().all(|pf| pf.file_index != f) || p == num_pieces - 1)
+                    .collect::<Vec<_>>()
+                {
+                    if let Some(first_piece) = first_file_pieces.remove(&f) {
+                        files[f].pieces = Range::from(first_piece..p + 1);
+                    }
                 }
                 piece_files.push(files_for_piece);
             }
@@ -174,11 +196,11 @@ impl Metainfo {
         let mut root = HashMap::new();
 
         if self.announces.len() == 1 && self.announces[0].len() == 1 {
-            root.insert(Vec::from(b"announce"),
+            root.insert(b"announce".into(),
                 ByteString(self.announces[0][0].as_bytes().to_vec()),
             );
         } else {
-            root.insert(Vec::from(b"announce-list"),
+            root.insert(b"announce-list".into(),
                 List(
                     self.announces.iter()
                         .map(|tier| List(
@@ -191,17 +213,17 @@ impl Metainfo {
             );
         }
         if let Some(created_by) = &self.created_by {
-            root.insert(Vec::from(b"created by"),
+            root.insert(b"created by".into(),
                 ByteString(created_by.as_bytes().to_vec()),
             );
         }
         if let Some(comment) = &self.comment {
-            root.insert(Vec::from(b"comment"),
+            root.insert(b"comment".into(),
                 ByteString(comment.as_bytes().to_vec()),
             );
         }
         if let Some(metadata) = metadata {
-            root.insert(Vec::from(b"info"),
+            root.insert(b"info".into(),
                 metadata.to_bencode(),
             );
         }

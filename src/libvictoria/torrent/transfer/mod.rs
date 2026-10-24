@@ -42,7 +42,6 @@ pub struct Transfer {
     piece_bitfield: Bitfield,
     connections: HashMap<PeerId, Connection>,
     piece_cache: PieceCache,
-    downloaded_pieces: usize,
     uploaded: usize,
 }
 
@@ -54,9 +53,9 @@ impl Transfer {
         progress_tx: watch::Sender<Progress>,
         config_rx: watch::Receiver<Config>,
     ) -> Result<Self> {
-        let (pieces, downloaded_pieces, piece_bitfield)
+        let (pieces, piece_bitfield)
             = Self::load_state(&metadata, &info_hash, &config_rx).await?;
-        let downloaded = (downloaded_pieces * metadata.piece_length).min(metadata.length);
+        let downloaded = (piece_bitfield.num_set() * metadata.piece_length).min(metadata.length);
         let left = metadata.length - downloaded;
         let _ = tracker_tx.send(tracker::Progress {
             downloaded,
@@ -72,7 +71,6 @@ impl Transfer {
             tracker_tx,
             progress_tx,
             config_rx,
-            downloaded_pieces,
             piece_bitfield,
             connections: HashMap::new(),
             uploaded: 0,
@@ -101,11 +99,11 @@ impl Transfer {
         initial_messages: Option<&mut VecDeque<Message>>,
     ) -> Result<()> {
         let mut con = Connection::new(peer_id, tx, self.metadata.num_pieces, supports_fast);
-        if self.downloaded_pieces == 0 && supports_fast {
+        if self.piece_bitfield.num_set() == 0 && supports_fast {
             con.send(Message::HaveNone).await;
-        } else if self.downloaded_pieces == self.metadata.num_pieces && supports_fast {
+        } else if self.piece_bitfield.num_set() == self.metadata.num_pieces && supports_fast {
             con.send(Message::HaveAll).await;
-        } else if self.downloaded_pieces != 0 {
+        } else if self.piece_bitfield.num_set() != 0 {
             con.send(Message::Bitfield(self.piece_bitfield.clone())).await;
         }
         con.set_am_interested(true).await;
@@ -204,7 +202,7 @@ impl Transfer {
                 let block_index = block_index(begin);
                 debug!("Got request {index}:{block_index}");
                 if self.connections.get(peer_id).map(|c| c.can_upload()).unwrap_or(false)
-                    && self.piece_bitfield.has(index) {
+                    && self.piece_bitfield.is_set(index) {
                         let piece = self.read_piece(index, begin, length).await?;
                         debug!("Sent block {index}:{block_index} ({})", piece.len());
                         if let Some(c) = self.connections.get_mut(peer_id) {
@@ -245,7 +243,6 @@ impl Transfer {
                     if let Some(piece) = self.pieces[index].place(block_index, block, true) {
                         self.write_piece(index, &piece).await?;
                         self.piece_bitfield.set(index);
-                        self.downloaded_pieces += 1;
                         for con in self.connections.values() {
                             con.send(Message::Have {index}).await;
                         }
@@ -260,6 +257,9 @@ impl Transfer {
                     
                     self.progress_tx.send_modify(|p| {
                         if let Some(t) = p.transfer.as_mut() {
+                            for (f, file) in self.metadata.files.iter().enumerate() {
+                                t.files[f].piece_bitfield = self.piece_bitfield.subfield(file.pieces);
+                            }
                             t.downloaded = self.downloaded_left().0;
                             t.piece_bitfield = self.piece_bitfield.clone();
                             t.active_pieces = self.pieces.iter()
@@ -268,8 +268,6 @@ impl Transfer {
                                 .map(|(p, piece)| PieceProgress {
                                     index: p,
                                     block_bitfield: piece.to_bitfield(),
-                                    num_blocks: piece.num_blocks(),
-                                    num_obtained_blocks: piece.obtained_blocks(),
                                     num_verification_failures: piece.num_verification_failures(),
                                 })
                                 .collect();
@@ -337,11 +335,10 @@ impl Transfer {
         metadata: &Metadata,
         info_hash: &Hash,
         config_rx: &watch::Receiver<Config>
-    ) -> Result<(Vec<Piece>, usize, Bitfield)> {
+    ) -> Result<(Vec<Piece>, Bitfield)> {
         let mut pieces = vec![];
         let path = config_rx.borrow().data_path
             .join(info_hash.to_string()).join("state");
-        let mut downloaded_pieces = 0;
         let mut bitfield = Bitfield::new(metadata.num_pieces);
         if fs::try_exists(&path).await? {
             info!("Recovering");
@@ -354,10 +351,7 @@ impl Transfer {
             file.read_to_end(&mut bytes).await?;
             bitfield.set_bytes(&bytes);
             for p in 0..metadata.num_pieces {
-                let written = bitfield.has(p);
-                if written {
-                    downloaded_pieces += 1;
-                }
+                let written = bitfield.is_set(p);
                 pieces.push(Piece::new(
                     Some(p),
                     BLOCK_SIZE,
@@ -377,7 +371,7 @@ impl Transfer {
                 ));
             }
         }
-        Ok((pieces, downloaded_pieces, bitfield))
+        Ok((pieces, bitfield))
     }
 
     async fn read_piece(&mut self, index: usize, begin: usize, length: usize) -> Result<Vec<u8>> {
@@ -495,7 +489,7 @@ impl Transfer {
     }
 
     fn downloaded_left(&self) -> (usize, usize) {
-        let downloaded = (self.downloaded_pieces * self.metadata.piece_length)
+        let downloaded = (self.piece_bitfield.num_set() * self.metadata.piece_length)
             .min(self.metadata.length);
         let left = self.metadata.length - downloaded;
         (downloaded, left)
@@ -541,12 +535,14 @@ impl Transfer {
                             f.path.clone()
                         }.to_string_lossy().into_owned(),
                         size: f.length,
+                        piece_bitfield: self.piece_bitfield.subfield(f.pieces),
+                        priority: FilePriority::Normal,
                     })
                     .collect(),
                 size: self.metadata.length,
                 down_speed: 0,
                 up_speed: 0,
-                downloaded: (self.downloaded_pieces * self.metadata.piece_length).min(self.metadata.length),
+                downloaded: (self.piece_bitfield.num_set() * self.metadata.piece_length).min(self.metadata.length),
                 uploaded: 0,
                 piece_bitfield: self.piece_bitfield.clone(),
                 active_pieces: Vec::new(),

@@ -29,7 +29,8 @@ impl PEXMessage {
 
             if let Some(added_bytes) = &root.optional(b"added")? {
                 added.extend(
-                    Endpoint::from_compact_4(added_bytes.as_bytes()?)
+                    Endpoint::from_compact_4_list(added_bytes.as_bytes()?)
+                        .map_err(|e| added_bytes.wrap_err(e))?
                         .into_iter().enumerate().map(
                             |(e, endpoint)| PeerInfo {
                                 endpoints: HashSet::from_iter(vec![endpoint]),
@@ -41,7 +42,8 @@ impl PEXMessage {
             }
             if let Some(added6_bytes) = &root.optional(b"added6")? {
                 added.extend(
-                    Endpoint::from_compact_6(added6_bytes.as_bytes()?)
+                    Endpoint::from_compact_6_list(added6_bytes.as_bytes()?)
+                        .map_err(|e| added6_bytes.wrap_err(e))?
                         .into_iter().enumerate().map(
                             |(e, endpoint)| PeerInfo {
                                 endpoints: HashSet::from_iter(vec![endpoint]),
@@ -53,10 +55,16 @@ impl PEXMessage {
             }
 
             if let Some(dropped_bytes) = &root.optional(b"dropped")? {
-                dropped.extend(Endpoint::from_compact_4(dropped_bytes.as_bytes()?));
+                dropped.extend(
+                    Endpoint::from_compact_4_list(dropped_bytes.as_bytes()?)
+                        .map_err(|e| dropped_bytes.wrap_err(e))?
+                );
             }
             if let Some(dropped6_bytes) = &root.optional(b"dropped6")? {
-                dropped.extend(Endpoint::from_compact_4(dropped6_bytes.as_bytes()?));
+                dropped.extend(
+                    Endpoint::from_compact_4_list(dropped6_bytes.as_bytes()?)
+                        .map_err(|e| dropped6_bytes.wrap_err(e))?
+                );
             }
 
             Ok(Self {added, dropped})
@@ -74,12 +82,12 @@ impl PEXMessage {
         for added in &self.added {
             for endpoint in &added.endpoints {
                 match endpoint {
-                    Endpoint::Ip(std::net::SocketAddr::V4(_)) => {
-                        added4.extend(endpoint.to_compact_4().unwrap());
+                    Endpoint::V4(v4) => {
+                        added4.extend(v4.to_compact());
                         flags4.push(added.flags);
                     }
-                    Endpoint::Ip(std::net::SocketAddr::V6(_)) => {
-                        added6.extend(endpoint.to_compact_6().unwrap());
+                    Endpoint::V6(v6) => {
+                        added6.extend(v6.to_compact());
                         flags6.push(added.flags);
                     }
                     _ => (),
@@ -88,22 +96,18 @@ impl PEXMessage {
         }
         for dropped in &self.dropped {
             match dropped {
-                Endpoint::Ip(std::net::SocketAddr::V4(_)) => {
-                    dropped4.extend(dropped.to_compact_4().unwrap());
-                }
-                Endpoint::Ip(std::net::SocketAddr::V6(_)) => {
-                    dropped6.extend(dropped.to_compact_6().unwrap());
-                }
+                Endpoint::V4(v4) => dropped4.extend(v4.to_compact()),
+                Endpoint::V6(v6) => dropped6.extend(v6.to_compact()),
                 _ => (),
             }
         }
         Dictionary(HashMap::from([
-            (Vec::from(b"added"), ByteString(added4)),
-            (Vec::from(b"added6"), ByteString(added6)),
-            (Vec::from(b"added.f"), ByteString(flags4)),
-            (Vec::from(b"added6.f"), ByteString(flags6)),
-            (Vec::from(b"dropped"), ByteString(dropped4)),
-            (Vec::from(b"dropped6"), ByteString(dropped6)),
+            (b"added".into(), ByteString(added4)),
+            (b"added6".into(), ByteString(added6)),
+            (b"added.f".into(), ByteString(flags4)),
+            (b"added6.f".into(), ByteString(flags6)),
+            (b"dropped".into(), ByteString(dropped4)),
+            (b"dropped6".into(), ByteString(dropped6)),
         ])).to_bytes()
     }
 }

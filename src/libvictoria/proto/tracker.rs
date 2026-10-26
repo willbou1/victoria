@@ -1,4 +1,4 @@
-use anyhow::{Result, Context};
+use anyhow::{Result, Context, ensure, anyhow};
 use tracing::{trace};
 use tokio::{
     net::UdpSocket,
@@ -57,14 +57,14 @@ impl TrackerResponse {
         }().context("while parsing metadata message")
     }
 
-    fn from_udp_response(response: &[u8]) -> Self {
-        Self {
-            interval: i32::from_be_bytes(response[8..12].try_into().unwrap()) as u64,
+    fn from_udp_response(response: &[u8]) -> Result<Self> {
+        Ok(Self {
+            interval: i32::from_be_bytes(response[8..12].try_into()?) as u64,
             min_interval: None,
-            leechers: Some(i32::from_be_bytes(response[12..16].try_into().unwrap()) as u64),
-            seeders: Some(i32::from_be_bytes(response[16..20].try_into().unwrap()) as u64),
-            peers: PeerInfo::from_compact(&response[20..]),
-        }
+            leechers: Some(i32::from_be_bytes(response[12..16].try_into()?) as u64),
+            seeders: Some(i32::from_be_bytes(response[16..20].try_into()?) as u64),
+            peers: PeerInfo::from_compact_4_list(&response[20..])?,
+        })
     }
 }
 
@@ -136,7 +136,7 @@ pub async fn request_udp(
 
     // connect response
     for n in 0..(MAX_ATTEMPTS + 1) {
-        anyhow::ensure!(
+        ensure!(
             n < MAX_ATTEMPTS,
             "Max attemps for connection"
         );
@@ -145,30 +145,31 @@ pub async fn request_udp(
 
         match tokio::time::timeout(
             Duration::from_secs(15 * (1 << n)),
-            sock.recv(&mut response)).await {
-                Ok(len) => {
-                    let len = len?;
-                    if len < 16 {
-                        trace!(tracker = %url, "Expected connect response to be at least 16 bytes, got {len}");
-                        continue;
-                    }
-                    let action = u32::from_be_bytes(response[..4].try_into()?);
-                    if action != 0 {
-                        trace!(tracker = %url, "Expected connect (0) action, got {action}");
-                        continue;
-                    }
-                    if response[4..8] != request[12..16] {
-                        trace!(tracker = %url, "Expected connect transaction id to match");
-                        continue;
-                    }
-                    connection_id.copy_from_slice(&response[8..16]);
-                    break;
-                }
-                Err(_) => {
-                    trace!(tracker = %url, "Connection timed out");
+            sock.recv(&mut response)).await
+        {
+            Ok(len) => {
+                let len = len?;
+                if len < 16 {
+                    trace!(tracker = %url, "Expected connect response to be at least 16 bytes, got {len}");
                     continue;
                 }
+                let action = u32::from_be_bytes(response[..4].try_into()?);
+                if action != 0 {
+                    trace!(tracker = %url, "Expected connect (0) action, got {action}");
+                    continue;
+                }
+                if response[4..8] != request[12..16] {
+                    trace!(tracker = %url, "Expected connect transaction id to match");
+                    continue;
+                }
+                connection_id.copy_from_slice(&response[8..16]);
+                break;
             }
+            Err(_) => {
+                trace!(tracker = %url, "Connection timed out");
+                continue;
+            }
+        }
     }
     trace!(tracker = %url, "Connected");
 
@@ -203,7 +204,7 @@ pub async fn request_udp(
 
     // announce response
     for n in 0..(MAX_ATTEMPTS + 1) {
-        anyhow::ensure!(
+        ensure!(
             n < MAX_ATTEMPTS,
             "Max attemps for announce"
         );
@@ -212,32 +213,33 @@ pub async fn request_udp(
 
         match tokio::time::timeout(
             Duration::from_secs(15 * (1 << n)),
-            sock.recv(&mut response)).await {
-                Ok(len) => {
-                    let len = len?;
-                    if len < 20 {
-                        trace!(tracker = %url, "Expected announce response to be at least 20 bytes, got {len}");
-                        continue;
-                    }
-                    let action = u32::from_be_bytes(response[..4].try_into()?);
-                    if action != 1 {
-                        trace!(tracker = %url, "Expected announce (1) action, got {action}");
-                        continue;
-                    }
-                    if response[4..8] != request[12..16] {
-                        trace!(tracker = %url, "Expected announce transaction id to match");
-                        continue;
-                    }
-
-                    return Ok(TrackerResponse::from_udp_response(&response[0..len]));
-                }
-                Err(_) => {
-                    trace!(tracker = %url, "Announce timed out");
+            sock.recv(&mut response)).await
+        {
+            Ok(len) => {
+                let len = len?;
+                if len < 20 {
+                    trace!(tracker = %url, "Expected announce response to be at least 20 bytes, got {len}");
                     continue;
                 }
+                let action = u32::from_be_bytes(response[..4].try_into()?);
+                if action != 1 {
+                    trace!(tracker = %url, "Expected announce (1) action, got {action}");
+                    continue;
+                }
+                if response[4..8] != request[12..16] {
+                    trace!(tracker = %url, "Expected announce transaction id to match");
+                    continue;
+                }
+
+                return Ok(TrackerResponse::from_udp_response(&response[0..len])?);
             }
+            Err(_) => {
+                trace!(tracker = %url, "Announce timed out");
+                continue;
+            }
+        }
     }
-    Err(anyhow::anyhow!("Unreachable"))
+    Err(anyhow!("Unreachable"))
 }
 
 pub async fn request_http(
@@ -263,7 +265,7 @@ pub async fn request_http(
     ).await?;
     let body = res.bytes().await?;
     let response = TrackerResponse::from_bencode(&body)
-        .map_err(|e| anyhow::anyhow!("{:?}", e))?;
+        .map_err(|e| anyhow!("{:?}", e))?;
 
     Ok(response)
 }

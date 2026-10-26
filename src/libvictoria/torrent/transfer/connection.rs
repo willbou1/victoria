@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use tokio::{
     sync::mpsc,
 };
@@ -141,7 +141,7 @@ impl Connection {
     }
 
     pub fn set_bitfield(&mut self, bitfield: Bitfield) -> Result<()> {
-        anyhow::ensure!(
+        ensure!(
             bitfield.num_bytes() == self.piece_bitfield.num_bytes(),
             "The received bitfield should be {} bytes long, got {}",
             self.piece_bitfield.num_bytes(), bitfield.num_bytes()

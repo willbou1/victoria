@@ -1,7 +1,7 @@
 mod connection;
 mod piece_cache;
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -11,7 +11,7 @@ use std::{
     collections::{HashMap, VecDeque},
     io::SeekFrom,
 };
-use tracing::{info, debug, trace};
+use tracing::{info_span, info, debug, trace};
 
 use crate::libvictoria::{
     bitfield::Bitfield,
@@ -178,10 +178,7 @@ impl Transfer {
         peer_id: &PeerId,
         message: Message
     ) -> Result<()> {
-        let span = tracing::info_span!(
-            "connection",
-            id = %peer_id,
-        );
+        let span = info_span!("connection", id = %peer_id);
         let guard = span.enter();
         match message {
             Message::Bitfield(bitfield) => {
@@ -426,10 +423,7 @@ impl Transfer {
         piece_index: usize,
         block_index: usize,
     ) -> Result<()> {
-        let span = tracing::info_span!(
-            "connection",
-            id = %peer_id,
-        );
+        let span = info_span!("connection", id = %peer_id);
         let _enter = span.enter();
         let piece_length = self.metadata.piece_length(piece_index);
         let begin = BLOCK_SIZE * block_index;
@@ -555,7 +549,7 @@ impl Transfer {
     }
 
     fn check_piece_index(&self, index: usize, op: &str) -> Result<()> {
-        anyhow::ensure!(
+        ensure!(
             index < self.metadata.num_pieces,
             "The index of {op} leads outside the number of pieces, got {index}",
         );
@@ -565,13 +559,13 @@ impl Transfer {
     fn check_piece_begin(&self, index: usize, begin: usize, boundary: bool, op: &str) -> Result<()> {
         self.check_piece_index(index, op)?;
         if boundary {
-            anyhow::ensure!(
+            ensure!(
                 begin % BLOCK_SIZE == 0,
                 "Begin of {op} is not at block boundary, got {begin}",
             );
         }
         let piece_length = self.metadata.piece_length(index);
-        anyhow::ensure!(
+        ensure!(
             begin < piece_length,
             "Begin of {op} is past piece {index} of length {piece_length}, got {begin}",
         );
@@ -583,12 +577,12 @@ impl Transfer {
         let piece_length = self.metadata.piece_length(index);
         let block_length = (piece_length - begin).min(BLOCK_SIZE);
         if boundary {
-            anyhow::ensure!(
+            ensure!(
                 length == block_length,
                 "Length  of {op} does not match block, got {length}",
             );
         } else {
-            anyhow::ensure!(
+            ensure!(
                 begin + length <= piece_length,
                 "Length of {op} is past piece {index} of length {piece_length}, got {begin} + {length}",
             );

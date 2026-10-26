@@ -10,8 +10,9 @@ use tokio::{
     sync::mpsc,
     sync::watch,
     io::AsyncWriteExt,
+    select,
 };
-use tracing::{info, warn, debug, trace, Instrument, Span};
+use tracing::{info, warn, debug, trace, info_span, Instrument, Span};
 use transfer::Transfer;
 use url::Url;
 use std::{
@@ -22,9 +23,13 @@ use std::{
 
 use crate::libvictoria::{
     metainfo::{Metadata, Metainfo},
-    proto::{bit_torrent::{BitTorrent, Message},
-    metadata::MetadataMessage,
-    pex::PEXMessage, tracker},
+    proto::{
+        bit_torrent::{BitTorrent, Message},
+        metadata::MetadataMessage,
+        pex::PEXMessage,
+        tracker,
+    },
+    dht::DHTEvent,
     tracker::{TrackerEvent, Trackers},
     types::*
 };
@@ -80,6 +85,7 @@ pub struct Torrent {
     peers: HashMap<PeerId, Peer>,
     rx: mpsc::Receiver<Event>,
     peer_tx: mpsc::Sender<Event>,
+    dht_tx: mpsc::Sender<DHTEvent>,
     tracker_tx: watch::Sender<tracker::Progress>,
     tracker_event_tx: mpsc::Sender<TrackerEvent>,
     info_hash: Hash,
@@ -105,7 +111,11 @@ impl Torrent {
         ).await?)
     }
     
-    pub async fn from_magnet(url: &str, config_rx: watch::Receiver<Config>) -> Result<Option<Self>> {
+    pub async fn from_magnet(
+        url: &str,
+        config_rx: watch::Receiver<Config>,
+        dht_tx: mpsc::Sender<DHTEvent>,
+    ) -> Result<Option<Self>> {
         let url = Url::parse(url).unwrap();
         let mut pairs = url.query_pairs();
         let xt = pairs.find(|(n, _)| n == "xt").unwrap();
@@ -126,6 +136,7 @@ impl Torrent {
             &display_name,
             info_hash,
             config_rx,
+            dht_tx,
             Metainfo::from_magnet(trackers),
             metadata_piece,
             None,
@@ -135,6 +146,7 @@ impl Torrent {
     pub async fn from_torrent_file(
         path: &PathBuf,
         config_rx: watch::Receiver<Config>,
+        dht_tx: mpsc::Sender<DHTEvent>,
     ) -> Result<Option<Self>> {
         let file = fs::read(path).await?;
         let (metainfo, metadata_bytes) = Metainfo::from_bytes(&file)?;
@@ -155,6 +167,7 @@ impl Torrent {
             &metadata.name.clone(),
             info_hash,
             config_rx,
+            dht_tx,
             metainfo,
             metadata_piece,
             Some(metadata),
@@ -179,19 +192,20 @@ impl Torrent {
     pub async fn from_info_hash(
         info_hash_str: &str,
         config_rx: watch::Receiver<Config>,
+        dht_tx: mpsc::Sender<DHTEvent>,
     ) -> Result<Self> {
         let dir_path = config_rx.borrow().data_path
             .join(info_hash_str);
         let path = Self::find_torrent_file(&dir_path).await?;
         let file = fs::read(&path).await?;
         let (metainfo, metadata_bytes) = Metainfo::from_bytes(&file)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .map_err(|e| anyhow!("{e}"))?;
         {}
         info!("Parsed metainfo");
 
         if let Some(metadata_bytes) = metadata_bytes {
             let metadata = Metadata::from_bytes(&metadata_bytes)
-                .map_err(|e| anyhow::anyhow!(e))?;
+                .map_err(|e| anyhow!(e))?;
             info!("Parsed metadata");
 
             let info_hash = Hash::from(Sha1::digest(&metadata_bytes).into());
@@ -201,6 +215,7 @@ impl Torrent {
                 &metadata.name.clone(),
                 info_hash,
                 config_rx,
+                dht_tx,
                 metainfo,
                 metadata_piece,
                 Some(metadata),
@@ -219,6 +234,7 @@ impl Torrent {
                 &display_name,
                 info_hash,
                 config_rx,
+                dht_tx,
                 metainfo,
                 metadata_piece,
                 None,
@@ -230,14 +246,12 @@ impl Torrent {
         display_name: &str,
         info_hash: Hash,
         config_rx: watch::Receiver<Config>,
+        dht_tx: mpsc::Sender<DHTEvent>,
         metainfo: Metainfo,
         metadata_piece: Piece,
         metadata: Option<Metadata>,
     ) -> Result<Self> {
-        let span = tracing::info_span!(
-            "torrent",
-            display_name = %display_name,
-        );
+        let span = info_span!("torrent", display_name = %display_name);
         let _enter = span.enter();
 
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
@@ -292,6 +306,7 @@ impl Torrent {
             peers: HashMap::new(),
             peer_tx: tx,
             tracker_tx,
+            dht_tx,
             tracker_event_tx,
             metadata: metadata_piece,
             transfer,
@@ -339,7 +354,7 @@ impl Torrent {
             let mut tick_interval = tokio::time::interval(Duration::from_secs(1));
             let mut autosave_interval = tokio::time::interval(AUTOSAVE_INTERVAL);
             loop {
-                tokio::select! {
+                select! {
                     event = self.rx.recv() => {
                         self.handle_event(event.unwrap()).await?;
                     }
@@ -472,10 +487,7 @@ impl Torrent {
         for (peer_id, peer) in &mut self.peers {
             while peer.can_request_metadata() {
                 if let Some(index) = self.metadata.find_available_block(&peer_id) {
-                    let span = tracing::info_span!(
-                        "peer",
-                        id = %peer_id,
-                    );
+                    let span = info_span!("peer", id = %peer_id);
                     let _enter = span.enter();
                     debug!("Requested metadata {index}");
                     self.metadata.download(index, *peer_id);
@@ -588,10 +600,7 @@ impl Torrent {
         match event {
             Event::Message(peer_id, message) => {
                 if let Some(peer) = self.peers.get_mut(&peer_id) {
-                    let span = tracing::info_span!(
-                        "peer",
-                        id = %peer_id,
-                    );
+                    let span = info_span!("peer", id = %peer_id);
                     let guard = span.enter();
                     // dispatch to transfer layer
                     match message {
@@ -622,6 +631,10 @@ impl Torrent {
 
                         Message::DHTPort { port } => {
                             debug!("DHT port {port}");
+                            // TODO Make the DHT event carry all endpoints to try them in the DHT service
+                            let mut endpoint = peer.info.endpoints.iter().next().unwrap().clone();
+                            endpoint.set_port(port);
+                            let _ = self.dht_tx.send(DHTEvent::FoundNode(endpoint)).await;
                         }
 
                         Message::Unsupported { type_byte } => 

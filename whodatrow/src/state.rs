@@ -134,16 +134,6 @@ where
         })
     }
 
-    pub fn handle_event(&mut self, event: TableEvent) {
-        use TableEvent::*;
-        match event {
-            Select(col, row) | ToggleSub(Some((col, row))) =>
-                self.focus_position(col, row),
-            _ => (),
-        }
-        self.handle_event_internal(event, None);
-    }
-
     fn unfocus_branch(&mut self) {
         if let Some(index) = self.focused_section {
             let state = self.selected_row.as_ref()
@@ -183,6 +173,16 @@ where
                 }
             }
         }
+    }
+
+    pub fn handle_event(&mut self, event: TableEvent) {
+        use TableEvent::*;
+        match event {
+            Select(col, row) | ToggleSub(Some((col, row))) =>
+                self.focus_position(col, row),
+            _ => (),
+        }
+        self.handle_event_internal(event, None);
     }
 
     fn handle_event_internal(

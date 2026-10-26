@@ -1,12 +1,12 @@
 use rand::seq::SliceRandom;
-use tracing::{Instrument, debug, trace};
+use tracing::{Instrument, info_span, debug, trace};
 use std::{
     fmt,
     time::{Duration},
 };
-use tokio::sync::{
-    mpsc,
-    watch,
+use tokio::{
+    sync::{mpsc, watch},
+    select,
 };
 
 use crate::libvictoria::{
@@ -77,7 +77,7 @@ impl Trackers {
     }
 
     pub async fn run(mut self) {
-        let span = tracing::info_span!("trackers");
+        let span = info_span!("trackers");
         let _enter = span.enter();
         async {
             self.announce().await;
@@ -87,7 +87,7 @@ impl Trackers {
                     .max(self.min_interval.unwrap_or(0))
             )));
             loop {
-                tokio::select!(
+                select!(
                     _ = &mut sleep => {
                         self.announce().await;
 
@@ -159,10 +159,7 @@ impl Trackers {
             let mut bad = Vec::new();
             for u in 0..self.urls[t].len() {
                 let url = self.urls[t][u].clone();
-                let span = tracing::info_span!(
-                    "tracker",
-                    url = %url
-                );
+                let span = info_span!("tracker", url = %url);
                 self.progress_tx.send_modify(|p| {
                     p.trackers.entry(url.clone()).and_modify(|t| {
                         t.succeeded = Some(TrackerStatus::Announcing);
@@ -213,7 +210,7 @@ impl Trackers {
                                     t.succeeded = Some(TrackerStatus::Failed);
                                 });
                             });
-                            debug!("Failed to announced {e}");
+                            debug!("Failed to announced {e:#}");
                             bad.push(url);
                         }
                     }

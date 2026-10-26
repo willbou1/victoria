@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure, anyhow};
 use tokio::{
     net::{
         TcpStream,
@@ -6,6 +6,7 @@ use tokio::{
     },
     io::{AsyncWriteExt, AsyncReadExt},
     sync::mpsc,
+    select,
 };
 use std::{
     collections::{HashMap},
@@ -189,20 +190,20 @@ impl BitTorrent {
 
                 // Receive the handshake response and verify it is right
                 stream.read_exact(&mut handshake).await?;
-                anyhow::ensure!(
+                ensure!(
                     handshake[0] == 19,
                     "expected handshake response to start with 19"
                 );
-                anyhow::ensure!(
+                ensure!(
                     &handshake[1..20] == b"BitTorrent protocol",
                     "expected handshake response to have 'BitTorrent protocol'"
                 );
-                anyhow::ensure!(
+                ensure!(
                     &handshake[28..48] == info_hash.as_bytes(),
                     "expected handshake response to have same info hash"
                 );
                 if let Some(peer_id) = peer_info.id {
-                    anyhow::ensure!(
+                    ensure!(
                         &handshake[48..68] == peer_id.as_bytes(),
                         "expected handshake response to have right peer id"
                     );
@@ -219,7 +220,7 @@ impl BitTorrent {
             }
         ).await {
             Ok(result) => result,
-            Err(_) => Err(anyhow::anyhow!("Exceeded handshake timeout")),
+            Err(_) => Err(anyhow!("Exceeded handshake timeout")),
         }
     }
 
@@ -277,7 +278,7 @@ impl BitTorrent {
             let sleep = tokio::time::sleep(Duration::from_secs(60 * 2));
             tokio::pin!(sleep);
             loop {
-                tokio::select! {
+                select! {
                     message = rx.recv() => {
                         match message {
                             Some(message) => {
@@ -301,7 +302,7 @@ impl BitTorrent {
             Ok::<_, anyhow::Error>(())
         };
         
-        tokio::select! {
+        select! {
             result = reader_task => {
                 if let Err(e) = result {
                     let _ = tx.send(Event::Disconnection(id, e)).await;
@@ -412,7 +413,7 @@ impl BitTorrent {
     }
 
     fn check_length(expected: usize, actual: usize, at_least: bool, op: &str) -> Result<()> {
-        anyhow::ensure!(
+        ensure!(
             if at_least {actual >= expected} else {actual == expected},
             "The length of a {op} payloud should be{} {expected}, got {actual}",
             if at_least {" at least "} else {""}
@@ -549,7 +550,7 @@ impl BitTorrent {
                 match payload[0] {
                     0 => {
                         let msg = Message::from_extension_handshake_bytes(&payload[1..])
-                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                            .map_err(|e| anyhow!("{e}"))?;
                         if let Message::ExtensionHandshake { extensions: new, .. } = &msg {
                             extensions.lock().await.extend(new.clone());
                         }
@@ -557,11 +558,11 @@ impl BitTorrent {
                     }
                     PEX_ID => Message::PEX(
                         PEXMessage::from_bytes(&payload[1..])
-                            .map_err(|e| anyhow::anyhow!("{e}"))?
+                            .map_err(|e| anyhow!("{e}"))?
                     ),
                     METADATA_ID => Message::Metadata(
                         MetadataMessage::from_bytes(&payload[1..])
-                            .map_err(|e| anyhow::anyhow!("{e}"))?
+                            .map_err(|e| anyhow!("{e}"))?
                     ),
                     _ => Message::UnsupportedExtension { type_byte: payload[0] },
                 }

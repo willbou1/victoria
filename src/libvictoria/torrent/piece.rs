@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap},
     time::{Duration},
 };
-use tracing::{warn, debug};
+use tracing::{info_span, warn, debug};
 
 use crate::libvictoria::{
     bitfield::Bitfield, timer::Timer, types::*
@@ -279,10 +279,7 @@ impl Piece {
                 BlockState::Downloading { timer, peer_id, .. } => {
                     if timer.elapsed() > TIMEOUT {
                         self.downloading_blocks -= 1;
-                        let span = tracing::info_span!(
-                            "connection",
-                            id = %peer_id,
-                        );
+                        let span = info_span!("connection", id = %peer_id);
                         let _enter = span.enter();
                         debug!(index = ?self.index, "Block {b} timed out");
                         *ret.entry(*peer_id).or_insert(0) += 1;

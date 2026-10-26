@@ -3,9 +3,10 @@
 
 mod metainfo;
 mod tracker;
-mod proto;
 mod timer;
+mod proto;
 
+pub mod dht;
 pub mod types;
 pub mod bitfield;
 pub mod torrent;

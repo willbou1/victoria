@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use tokio_util::sync::CancellationToken;
 use std::{
     path::PathBuf,
     time::Duration,
@@ -11,6 +12,7 @@ use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
     fs,
+    select,
 };
 use crossterm::{
     execute,
@@ -26,7 +28,9 @@ use interprocess::local_socket::{
 use directories::{BaseDirs, UserDirs};
 use bencodedit::{accessor::BencodeAccessor, BencodeValue};
 use super::libvictoria::{
-    torrent::{Torrent, control::*}, types::*
+    torrent::{Torrent, control::*},
+    dht::{DHTManager, DHTEvent},
+    types::*
 };
 use whodatrow::{*, state::*};
 use super::util::*;
@@ -537,12 +541,13 @@ struct TorrentTask {
 async fn add_torrent(
     torrent_tasks: &mut Vec<TorrentTask>,
     config_rx: watch::Receiver<Config>,
+    dht_tx: mpsc::Sender<DHTEvent>,
     uri: &str,
 ) -> Result<()> {
     let torrent = if uri.starts_with("magnet:?") {
-        Torrent::from_magnet(uri, config_rx).await
+        Torrent::from_magnet(uri, config_rx, dht_tx).await
     } else {
-        Torrent::from_torrent_file(&PathBuf::from(uri), config_rx).await
+        Torrent::from_torrent_file(&PathBuf::from(uri), config_rx, dht_tx).await
     }?;
 
     if let Some(mut torrent) = torrent {
@@ -644,8 +649,16 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
         download_path: UserDirs::new().ok_or(anyhow!("Can't get user directories"))?
             .download_dir().ok_or(anyhow!("Can't find download directory"))?
             .join("victoria"),
-        client_id: PeerId::random(),
+        client_id: PeerId::random_with_client_version(),
     });
+
+    let cancel_dht = CancellationToken::new();
+    let dht = DHTManager::new(cancel_dht.clone()).await?;
+    let dht_tx = dht.tx.clone();
+    let dht_task = tokio::task::Builder::new()
+        .name("DHT")
+        .spawn(dht.run())
+        .unwrap();
 
     let mut torrent_tasks = Vec::new();
     let dir = &config_rx.borrow().data_path;
@@ -657,6 +670,7 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
             let mut torrent = Torrent::from_info_hash(
                 path.file_name().unwrap().to_string_lossy().as_ref(),
                 config_rx.clone(),
+                dht_tx.clone(),
             ).await?;
 
             torrent_tasks.push(TorrentTask {
@@ -672,7 +686,7 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
     }
     
     for arg in torrent_uris {
-        add_torrent(&mut torrent_tasks, config_rx.clone(), arg).await?;
+        add_torrent(&mut torrent_tasks, config_rx.clone(), dht_tx.clone(), arg).await?;
     }
 
     let mut interval = tokio::time::interval(Duration::from_millis(50));
@@ -684,14 +698,14 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
     prepare_terminal()?;
     let mut out = stdout();
     'main: loop {
-        tokio::select! {
+        select! {
             result = listener.accept() => {
                 let mut stream = result?;
                 let mut buf = Vec::new();
                 stream.read_to_end(&mut buf).await?;
                 let uris = read_uris(&buf).map_err(|e| anyhow!(e))?;
                 for uri in uris {
-                    add_torrent(&mut torrent_tasks, config_rx.clone(), &uri).await?;
+                    add_torrent(&mut torrent_tasks, config_rx.clone(), dht_tx.clone(), &uri).await?;
                 }
             }
             _ = interval.tick() => {
@@ -800,9 +814,11 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
     }
     
     restore_terminal()?;
+    cancel_dht.cancel();
     for torrent_task in torrent_tasks {
         let _ = torrent_task.tx.send(Command::Stop).await;
         torrent_task.task.await??;
     }
+    dht_task.await?;
     Ok(())
 }

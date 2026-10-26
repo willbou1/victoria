@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use rand::Rng;
+use rand::{Rng, RngExt};
 use std::{
     collections::HashSet,
     fmt,
@@ -8,8 +8,8 @@ use std::{
 
 use bencodedit::{accessor::BencodeAccessor, BencodeValue};
 
-pub type ClientVersion = [u8; 2];
-pub const CLIENT_VERSION: &'static ClientVersion = b"LV"; // libvictoria
+pub type ClientVersion = [u8; 4];
+pub const CLIENT_VERSION: &'static ClientVersion = &[b'L', b'V', 0, 0]; // libvictoria
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash(pub [u8; 20]);
@@ -26,9 +26,9 @@ impl Hash {
     pub fn from_xt(xt: &str) -> Result<Self> {
         let bytes: [u8; 20] = hex::decode(
             xt.strip_prefix("urn:btih:").ok_or(
-                anyhow::anyhow!("Only the btih format is supported for xt")
+                anyhow!("Only the btih format is supported for xt")
             )?
-        )?.try_into().map_err(|_| anyhow::anyhow!("Btih format requires 20 bytes"))?;
+        )?.try_into().map_err(|_| anyhow!("Btih format requires 20 bytes"))?;
         Ok(Self(bytes))
     }
 
@@ -44,12 +44,21 @@ impl fmt::Display for Hash {
         write!(f, "{}", self.0.map(|b| format!("{b:02x}")).join(""))
     }
 }
+impl fmt::Debug for Hash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Id(pub [u8; 20]);
 pub type PeerId = Id;
+pub type KademliaDistance = Id;
 
-impl PeerId {
+impl Id {
+    pub const MIN: Self = Self([0x00; 20]);
+    pub const MAX: Self = Self([0xFF; 20]);
+    
     pub fn from(bytes: [u8; 20]) -> Self {
         Self(bytes)
     }
@@ -62,10 +71,33 @@ impl PeerId {
         self.0
     }
 
+    pub fn kademlia(&self, other: &Self) -> KademliaDistance {
+        let mut d = [0; 20];
+        for i in 0..20 {
+            d[i] = self.0[i] ^ other.0[i];
+        }
+        Self(d)
+    }
+
+    pub fn prefix_length(&self) -> u8 {
+        for i in 0..20 {
+            let byte = self.0[i];
+            if byte > 0 {
+                return (19 - i as u8) * 8
+                    +  byte.bit_width() as u8;
+            }
+        }
+        return 0;
+    }
+
     pub fn random() -> Self {
+        Self(rand::rng().random())
+    }
+
+    pub fn random_with_client_version() -> Self {
         let mut bytes = [0; 20];
-        bytes[0..2].copy_from_slice(CLIENT_VERSION);
-        rand::rng().fill_bytes(&mut bytes[2..]);
+        bytes[0..4].copy_from_slice(CLIENT_VERSION);
+        rand::rng().fill_bytes(&mut bytes[4..]);
         Self(bytes)
     }
 
@@ -87,6 +119,11 @@ impl PeerId {
 impl fmt::Display for PeerId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0.map(|b| format!("{b:02x}")).join(""))
+    }
+}
+impl fmt::Debug for PeerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
     }
 }
 
@@ -208,6 +245,24 @@ impl Endpoint {
                 .map(|v6| Self::V6(v6))
                 .collect())
     }
+
+    pub fn set_port(&mut self, new_port: u16) {
+        match self {
+            Self::Hostname { port, .. } => *port = new_port,
+            Self::V4(v4) => v4.0.set_port(new_port),
+            Self::V6(v6) => v6.0.set_port(new_port),
+        }
+    }
+
+    pub async fn resolve(&self) -> Result<SocketAddr> {
+        Ok(match self {
+            Endpoint::V4(v4) => SocketAddr::V4(v4.0),
+            Endpoint::V6(v6) => SocketAddr::V6(v6.0),
+            Endpoint::Hostname { host, port } =>
+                tokio::net::lookup_host((host.as_str(), *port)).await?
+                    .next().ok_or(anyhow!("Failed to resolve hostname {host}"))?
+        })
+    }
 }
 
 impl fmt::Display for Endpoint {
@@ -316,26 +371,16 @@ impl PeerInfo {
         Ok(infos)
     }
 
-    pub fn from_compact(compact: &[u8]) -> Vec<Self> {
-        Endpoint::from_compact_4(compact).into_iter()
-            .map(Self::new).collect()
+    pub fn from_compact_4_list(compact: &[u8]) -> Result<Vec<Self>> {
+        Ok(Endpoint::from_compact_4_list(compact)?.into_iter()
+                .map(Self::new).collect())
     }
 
     pub async fn resolve(&self) -> Result<Vec<SocketAddr>> {
         let mut addrs = Vec::new();
-
         for endpoint in &self.endpoints {
-            match endpoint {
-                Endpoint::V4(v4) => addrs.push(SocketAddr::V4(v4.0)),
-                Endpoint::V6(v6) => addrs.push(SocketAddr::V6(v6.0)),
-                Endpoint::Hostname { host, port } => {
-                    addrs.extend(
-                        tokio::net::lookup_host((host.as_str(), *port)).await?
-                    );
-                }
-            }
+            addrs.push(endpoint.resolve().await?);
         }
-
         Ok(addrs)
     }
 }

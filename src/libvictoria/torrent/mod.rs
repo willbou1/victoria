@@ -38,6 +38,7 @@ use peer::{Peer, PeerState};
 use control::*;
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_mins(2);
+const DHT_INTERVAL: Duration = Duration::from_mins(1);
 
 const METADATA_BLOCK_SIZE: usize = 16 * 1024;
 
@@ -46,7 +47,7 @@ const MAX_DISCOVERY_ATTEMPTS: usize = 3;
 const PEER_CHANNEL_CAPACITY: usize = 100;
 const EVENT_CHANNEL_CAPACITY: usize = 400;
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 enum DiscoveryMechanism {
     Tracker,
     PEX,
@@ -77,6 +78,7 @@ pub(crate) enum Event {
     Disconnection(PeerId, anyhow::Error),
 
     Tracker(Vec<PeerInfo>),
+    DHT(Vec<EndpointV4>),
 }
 
 pub struct Torrent {
@@ -116,13 +118,15 @@ impl Torrent {
         config_rx: watch::Receiver<Config>,
         dht_tx: mpsc::Sender<DHTEvent>,
     ) -> Result<Option<Self>> {
-        let url = Url::parse(url).unwrap();
+        let url = Url::parse(url)?;
         let mut pairs = url.query_pairs();
-        let xt = pairs.find(|(n, _)| n == "xt").unwrap();
-        let dn = pairs.find(|(n, _)| n == "dn").unwrap();
+        let xt = pairs.find(|(n, _)| n == "xt")
+            .ok_or(anyhow!("magnet link has no trackers"))?;
+        let dn = pairs.find(|(n, _)| n == "dn")
+            .ok_or(anyhow!("magnet link has no display name"))?;
         let display_name = dn.1.into_owned();
 
-        let info_hash = Hash::from_xt(&xt.1).unwrap();
+        let info_hash = Hash::from_xt(&xt.1)?;
         if Self::check_already_exists(&config_rx, &info_hash).await? {
             return Ok(None);
         }
@@ -156,7 +160,7 @@ impl Torrent {
         let metadata = Metadata::from_bytes(&metadata_bytes)?;
         info!("Parsed metadata");
 
-        let info_hash = Hash::from(Sha1::digest(&metadata_bytes).into());
+        let info_hash = Hash(Sha1::digest(&metadata_bytes).into());
         if Self::check_already_exists(&config_rx, &info_hash).await? {
             return Ok(None);
         }
@@ -208,7 +212,7 @@ impl Torrent {
                 .map_err(|e| anyhow!(e))?;
             info!("Parsed metadata");
 
-            let info_hash = Hash::from(Sha1::digest(&metadata_bytes).into());
+            let info_hash = Hash(Sha1::digest(&metadata_bytes).into());
             let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes);
 
             Self::new(
@@ -221,7 +225,7 @@ impl Torrent {
                 Some(metadata),
             ).await
         } else {
-            let info_hash = Hash::from(
+            let info_hash = Hash(
                 hex::decode(info_hash_str)?
                     .try_into()
                     .map_err(|e: Vec<u8>| anyhow!("invalid info hash length: {}", e.len()))?
@@ -286,8 +290,7 @@ impl Torrent {
         );
         tokio::task::Builder::new()
             .name("trackers")
-            .spawn(trackers.run().instrument(span.clone()))
-            .unwrap();
+            .spawn(trackers.run().instrument(span.clone()))?;
 
         let transfer = if let Some(metadata) = metadata {
             Some(Transfer::new(
@@ -353,19 +356,25 @@ impl Torrent {
             self.write_metainfo().await?;
             let mut tick_interval = tokio::time::interval(Duration::from_secs(1));
             let mut autosave_interval = tokio::time::interval(AUTOSAVE_INTERVAL);
+            let mut dht_interval = tokio::time::interval(DHT_INTERVAL);
+            dht_interval.tick().await;
             loop {
                 select! {
                     event = self.rx.recv() => {
                         self.handle_event(event.unwrap()).await?;
-                    }
+                    },
                     _ = autosave_interval.tick() => {
                         if let Some(transfer) = &mut self.transfer {
                             transfer.save_state().await?;
                         }
-                    }
-                    _ = tick_interval.tick() => {
-                        self.tick().await?;
-                    }
+                    },
+                    _ = dht_interval.tick() => {
+                        let _ = self.dht_tx.send(DHTEvent::InfoHashRequest(
+                            self.info_hash,
+                            self.peer_tx.clone(),
+                        )).await;
+                    },
+                    _ = tick_interval.tick() => self.tick().await?,
                     command = self.command_rx.recv() => {
                         match command {
                             Some(Command::Stop) | None => {
@@ -382,7 +391,7 @@ impl Torrent {
                             }
                             Some(command) => self.handle_command(command).await?,
                         }
-                    }
+                    },
                 }
             }
             Ok(())
@@ -465,20 +474,35 @@ impl Torrent {
     }
 
     fn discover(&mut self, info: &PeerInfo, mechanism: DiscoveryMechanism) {
-        if self.peers.iter().all(|(_, c)| !c.info.is_same_peer(info)) {
-            match self.discovery_attemps.iter_mut().find(|a| a.info.is_same_peer(&info)) {
-                Some(attempt) => {
-                    if attempt.num_attempts < MAX_DISCOVERY_ATTEMPTS {
-                        attempt.num_attempts += 1;
+        // Make sure to add discovery mechanism to existing peers
+
+        match self.peers.iter().find(|(_, c)| c.info.is_same_peer(info)).clone() {
+            Some((id, _)) => {
+                self.progress_tx.send_modify(|p| {
+                    p.peers.get_mut(id).map(|peer_progress|
+                        match mechanism {
+                            DiscoveryMechanism::Tracker => peer_progress.discovery.trackers = true,
+                            DiscoveryMechanism::PEX => peer_progress.discovery.pex = true,
+                            DiscoveryMechanism::DHT => peer_progress.discovery.dht = true,
+                        }
+                    );
+                });
+            }
+            None => {
+                match self.discovery_attemps.iter_mut().find(|a| a.info.is_same_peer(&info)) {
+                    Some(attempt) => {
+                        if attempt.num_attempts < MAX_DISCOVERY_ATTEMPTS {
+                            attempt.num_attempts += 1;
+                            self.try_connect(info, None);
+                        } else {
+                            self.discovery_attemps.retain(|a| &a.info != info);
+                        }
+                    },
+                    None => {
+                        self.discovery_attemps.push(DiscoveryAttempt::new(info.clone(), mechanism));
                         self.try_connect(info, None);
-                    } else {
-                        self.discovery_attemps.retain(|a| &a.info != info);
-                    }
-                },
-                None => {
-                    self.discovery_attemps.push(DiscoveryAttempt::new(info.clone(), mechanism));
-                    self.try_connect(info, None);
-                },
+                    },
+                }
             }
         }
     }
@@ -662,7 +686,19 @@ impl Torrent {
                     self.peers.entry(id)
                         .and_modify(|p| p.state.reconnect(tx.clone()));
                 } else {
-                    self.discovery_attemps.retain(|a| a.info != info);
+                    let removed = self.discovery_attemps
+                        .extract_if(.., |a| a.info.is_same_peer(&info)).next();
+                    if let Some(DiscoveryAttempt { mechanism, .. }) = removed {
+                        self.progress_tx.send_modify(|p| {
+                            let peer_progress = p.peers.entry(bit_torrent.id)
+                                .or_insert(PeerProgress::new(bit_torrent.id));
+                            match mechanism {
+                                DiscoveryMechanism::Tracker => peer_progress.discovery.trackers = true,
+                                DiscoveryMechanism::PEX => peer_progress.discovery.pex = true,
+                                DiscoveryMechanism::DHT => peer_progress.discovery.dht = true,
+                            }
+                        });
+                    }
                     info.id = Some(bit_torrent.id);
                     debug!(peer = %info,"Discovered");
                     if let Some((_, m)) = self.peers.iter_mut().find(|(_, c)| c.info.is_same_peer(&info)) {
@@ -687,15 +723,14 @@ impl Torrent {
                     .name("BitTorrent")
                     .spawn(
                         bit_torrent.run(self.peer_tx.clone(), rx).instrument(self.span.clone())
-                    )
-                    .unwrap();
+                    )?;
             }
 
             Event::ConnectionFailure(peer_info, e, known_id) => {
                 self.discover(&peer_info, DiscoveryMechanism::Tracker);
                 if let Some(id) = known_id {
                     debug!(peer = %peer_info, "Couldn't reconnect ({e})");
-                    self.peers.get_mut(&id).unwrap().state.back_off();
+                    self.peers.entry(id).and_modify(|p| p.state.back_off());
                 } else {
                     debug!(peer = %peer_info, "Couldn't discover ({e})");
                 }
@@ -721,6 +756,12 @@ impl Torrent {
                 debug!("Tracker discovery");
                 for info in peer_infos {
                     self.discover(&info, DiscoveryMechanism::Tracker);
+                }
+            }
+            Event::DHT(endpointsv4) => {
+                debug!("Tracker discovery");
+                for endpointv4 in endpointsv4 {
+                    self.discover(&PeerInfo::from(endpointv4), DiscoveryMechanism::DHT);
                 }
             }
         }

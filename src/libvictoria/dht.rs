@@ -1,18 +1,19 @@
 use anyhow::Result;
 use tokio::{
-    sync::mpsc,
-    select,
+    select, sync::{mpsc, watch}
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, info_span, debug};
 use std::{
     array,
     time::{Duration, Instant},
-    collections::HashSet,
+    collections::{HashSet, HashMap},
 };
+use bencodedit::{BencodeError, BencodeErrorKind};
 
 use super::{
     proto::dht::*,
+    torrent::{Event, control::{DHTInfo, DHTNodeInfo}},
     types::*,
 };
 
@@ -56,8 +57,25 @@ impl Bucket {
     }
 }
 
+struct InfoHashLookup {
+    visited_ids: HashSet<NodeId>,
+    peers: HashSet<EndpointV4>,
+    tx: mpsc::Sender<Event>,
+}
+
+impl InfoHashLookup {
+    pub fn new(tx: mpsc::Sender<Event>) -> Self {
+        Self {
+            visited_ids: HashSet::new(),
+            peers: HashSet::new(),
+            tx,
+        }
+    }
+}
+
 pub enum DHTEvent {
     FoundNode(Endpoint),
+    InfoHashRequest(Hash, mpsc::Sender<Event>),
 }
 
 pub struct DHTManager {
@@ -66,14 +84,18 @@ pub struct DHTManager {
     buckets: [Bucket; 160],
     rx: mpsc::Receiver<DHTEvent>,
     pub tx: mpsc::Sender<DHTEvent>,
+    pub info_rx: watch::Receiver<DHTInfo>,
+    info_tx: watch::Sender<DHTInfo>,
     cancellation_token: CancellationToken,
 
+    info_hashes: HashMap<Hash, InfoHashLookup>,
     discovered_ids: HashSet<NodeId>,
 }
 
 impl DHTManager {
     pub async fn new(cancellation_token: CancellationToken) -> Result<Self> {
         let (tx, rx) = mpsc::channel(100);
+        let (info_tx, info_rx) = watch::channel(DHTInfo::default());
         let node_id = NodeId::random();
         Ok(Self {
             dht: DHT::bind(node_id, 6767).await?,
@@ -81,8 +103,11 @@ impl DHTManager {
             buckets: array::from_fn(|_| Bucket::new()),
             tx,
             rx,
+            info_tx,
+            info_rx,
             cancellation_token,
             
+            info_hashes: HashMap::new(),
             discovered_ids: HashSet::new(),
         })
     }
@@ -102,18 +127,15 @@ impl DHTManager {
                         break;
                     },
                     message = self.dht.receive() => match message {
-                        Ok(message) => {
-                            match message.type_of {
-                                MessageType::Response {response, id} => match &response {
-                                    Response::FindNode { nodes } => {
-                                        self.find_nodes(&id, nodes).await?;
-                                    }
-                                    _ => (),
-                                }
-                                _ => (),
+                        Ok((endpoint, message, query)) => self.handle_message(endpoint, message, query).await?,
+                        Err(e) => {
+                            if let Some(e) = e.downcast_ref::<BencodeError>()
+                                && matches!(e.kind, BencodeErrorKind::InvalidValue { .. })
+                            {
+                                continue;
                             }
+                            debug!("Failed to receive/decode DHT message: {e:#}");
                         }
-                        Err(_) => (),
                     },
                     event = self.rx.recv() => match event {
                         Some(event) => {
@@ -131,32 +153,101 @@ impl DHTManager {
         }.instrument(span.clone()).await
     }
 
+    pub async fn handle_message(
+        &mut self,
+        endpoint: Endpoint,
+        message: Message,
+        query: Option<Query>
+    ) -> Result<()> {
+        match message.type_of {
+            MessageType::Response {response, id} => match query.unwrap() {
+                Query::FindNode {..} => {
+                    if let Some(nodes) = response.nodes {
+                        self.find_nodes(&id, endpoint, &nodes).await?;
+                    }
+                }
+                Query::GetPeers { info_hash, .. } => {
+                    if let Some(nodes) = response.nodes {
+                        self.get_peers(info_hash, &id, endpoint, &nodes).await?;
+                    }
+                    if let Some(peers) = response.values {
+                        debug!("BINGO! {peers:?}");
+                        if let Some(lookup) = self.info_hashes.get_mut(&info_hash) {
+                            lookup.peers.extend(peers.clone());
+                            let _ = lookup.tx.send(Event::DHT(peers)).await;
+                        }
+                    }
+                }
+                _ => (),
+            }
+            _ => (),
+        }
+        Ok(())
+    }
+
     pub fn add_node(&mut self, prefix_length: u8, info: NodeInfo) {
         let bucket = &mut self.buckets[prefix_length as usize];
         if !bucket.is_full() {
             bucket.nodes.push(Node::new(info));
+            self.info_tx.send_modify(|info| {
+                info.buckets[prefix_length as usize].nodes.push(DHTNodeInfo {});
+            });
         }
     }
 
-    async fn find_nodes(&mut self, id: &NodeId, nodes: &[NodeInfo]) -> Result<()> {
-        let prefix_length = id.kademlia(&self.id).prefix_length() - 1;
-        if !self.discovered_ids.contains(id) {
-            self.add_node(prefix_length, NodeInfo {
-                id: *id,
-                endpoint: Endpoint::from_str("0.0.0.0", 6769),
-            });
-        } else {
+    async fn find_nodes(&mut self, id: &NodeId, endpoint: Endpoint, nodes: &[NodeInfo]) -> Result<()> {
+        let prefix_length = id.kademlia(&self.id).prefix_length();
+        if prefix_length == 160 {
             return Ok(());
         }
+
+        self.add_node(prefix_length, NodeInfo {
+            id: *id,
+            endpoint,
+        });
         for info in nodes {
             if !self.discovered_ids.contains(&info.id) {
                 self.discovered_ids.insert(info.id);
                 let other_prefix_length = info.id.kademlia(&self.id)
-                    .prefix_length() - 1;
-                if other_prefix_length < prefix_length {
-                    self.dht.query(&info.endpoint, Query::FindNode {
+                    .prefix_length();
+                if other_prefix_length == 160 {
+                    continue;
+                }
+                if other_prefix_length > prefix_length {
+                    let _ = self.dht.query(&info.endpoint, Query::FindNode {
                         target: self.id
-                    }).await?;
+                    }).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_peers(
+        &mut self,
+        info_hash: Hash,
+        id: &NodeId,
+        endpoint: Endpoint,
+        nodes: &[NodeInfo]
+    ) -> Result<()> {
+        let prefix_length = id.kademlia(&info_hash).prefix_length();
+        if prefix_length == 160 {
+            return Ok(());
+        }
+
+        self.info_hashes.get_mut(&info_hash).map(|l| l.visited_ids.insert(*id));
+        for info in nodes {
+            if !self.info_hashes.get(&info_hash).map(|l| l.visited_ids.contains(&info.id)).unwrap_or(true) {
+                self.info_hashes.get_mut(&info_hash).map(|l| l.visited_ids.insert(info.id));
+                let other_prefix_length = info.id.kademlia(&info_hash)
+                    .prefix_length();
+                if other_prefix_length == 160 {
+                    continue;
+                }
+                if other_prefix_length > prefix_length {
+                    let _ = self.dht.query(&info.endpoint, Query::GetPeers {
+                        info_hash
+                    }).await;
                 }
             }
         }
@@ -168,9 +259,21 @@ impl DHTManager {
         match event {
             FoundNode(endpoint)  => {
                 debug!("Received da DHT shitnode {endpoint}");
-                self.dht.query(&endpoint, Query::FindNode {
+                let _ = self.dht.query(&endpoint, Query::FindNode {
                     target: self.id
-                }).await?;
+                }).await;
+            }
+            InfoHashRequest(info_hash, tx) => {
+                debug!("Received info hash request {info_hash}");
+                self.info_hashes.insert(info_hash, InfoHashLookup::new(tx));
+                if let Some(closest_node) = self.buckets
+                    .iter().flat_map(|b| b.nodes.iter())
+                    .min_by_key(|n| n.info.id.kademlia(info_hash))
+                {
+                    let _ = self.dht.query(&closest_node.info.endpoint, Query::GetPeers {
+                        info_hash
+                    }).await;
+                }
             }
             _ => (),
         }

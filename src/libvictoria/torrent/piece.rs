@@ -330,7 +330,7 @@ impl Piece {
 
     fn verify(&self, piece: &[u8]) -> bool {
         let actual_hash = Sha1::digest(piece);
-        if actual_hash.as_slice() == self.hash.as_bytes() {
+        if actual_hash.as_slice() == self.hash.as_ref() {
             debug!(piece = ?self.index,
                 "Verification passed");
             return true;

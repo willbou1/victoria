@@ -8,9 +8,9 @@ use std::{
 #[derive(Debug, Error)]
 #[error("Bencode error at {position}: {kind}\n{}", String::from_utf8_lossy(encoded))]
 pub struct BencodeError {
-    encoded: Vec<u8>,
-    position: usize,
-    kind: BencodeErrorKind,
+    pub encoded: Vec<u8>,
+    pub position: usize,
+    pub kind: BencodeErrorKind,
 }
 
 #[derive(Debug, Error)]

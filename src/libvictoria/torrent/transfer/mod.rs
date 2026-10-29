@@ -428,8 +428,9 @@ impl Transfer {
         let piece_length = self.metadata.piece_length(piece_index);
         let begin = BLOCK_SIZE * block_index;
         let length = (piece_length - begin).min(BLOCK_SIZE);
-        self.connections.get_mut(peer_id).unwrap()
-            .request(piece_index, begin, length).await;
+        if let Some(c) = self.connections.get_mut(peer_id) {
+            c.request(piece_index, begin, length).await;
+        }
         debug!("Requested block {piece_index}:{block_index}");
         Ok(())
     }
@@ -473,7 +474,7 @@ impl Transfer {
                         }
                     }
                     None => {
-                        self.connections.get_mut(&peer_id).unwrap().piece_cursor = None;
+                        self.connections.entry(peer_id).and_modify(|c| c.piece_cursor = None);
                         break;
                     }
                 }

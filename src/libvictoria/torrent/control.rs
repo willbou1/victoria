@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     time::Duration,
     path::PathBuf,
+    array,
 };
 
 use crate::libvictoria::{
@@ -83,8 +84,26 @@ pub struct FileInfo {
 }
 
 #[derive(Debug)]
+pub struct DiscoveryInfo {
+    pub trackers: bool,
+    pub pex: bool,
+    pub dht: bool,
+}
+
+impl Default for DiscoveryInfo {
+    fn default() -> Self {
+        Self {
+            dht: false,
+            pex: false,
+            trackers: false,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct PeerProgress {
     pub id: PeerId,
+    pub discovery: DiscoveryInfo,
     pub client: Option<String>,
     pub supports_fast: bool,
     pub supports_pex: bool,
@@ -101,6 +120,7 @@ impl PeerProgress {
     pub fn new(id: PeerId) -> Self {
         Self {
             id,
+            discovery: DiscoveryInfo::default(),
             endpoints: HashSet::new(),
             connection: None,
             client: None,
@@ -168,4 +188,35 @@ pub enum Command {
     Resume,
     Delete,
     ReloadTrackers,
+}
+
+#[derive(Debug)]
+pub struct DHTNodeInfo {
+
+}
+
+#[derive(Debug)]
+pub struct DHTBucketInfo {
+    pub nodes: Vec<DHTNodeInfo>,
+}
+
+impl Default for DHTBucketInfo {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DHTInfo {
+    pub buckets: [DHTBucketInfo; 160],
+}
+
+impl Default for DHTInfo {
+    fn default() -> Self {
+        Self {
+            buckets: array::from_fn(|_| DHTBucketInfo::default()),
+        }
+    }
 }

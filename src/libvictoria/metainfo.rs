@@ -79,7 +79,7 @@ impl Metadata {
             let mut files = MetainfoFile::from_bencode(&info, &name)?;
             let piece_length: usize = info.required(b"piece length")?.to_integer()?;
             let pieces: Vec<_> = info.required(b"pieces")?.as_bytes()?
-                .chunks(20).map(|chunk| Hash::from(chunk.try_into().unwrap()))
+                .chunks(20).map(|chunk| Hash(chunk.try_into().unwrap()))
                 .collect();
 
             let num_pieces = pieces.len();

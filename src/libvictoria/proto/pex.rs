@@ -31,26 +31,16 @@ impl PEXMessage {
                 added.extend(
                     Endpoint::from_compact_4_list(added_bytes.as_bytes()?)
                         .map_err(|e| added_bytes.wrap_err(e))?
-                        .into_iter().enumerate().map(
-                            |(e, endpoint)| PeerInfo {
-                                endpoints: HashSet::from_iter(vec![endpoint]),
-                                id: None,
-                                flags: flags4.as_ref().map(|f| f[e])
-                                    .unwrap_or(PeerInfo::DEFAULT_FLAGS),
-                            })
+                        .into_iter().enumerate()
+                        .map(|(e, endpoint)| PeerInfo::new(endpoint, flags4.as_ref().map(|f| f[e])))
                 );
             }
             if let Some(added6_bytes) = &root.optional(b"added6")? {
                 added.extend(
                     Endpoint::from_compact_6_list(added6_bytes.as_bytes()?)
                         .map_err(|e| added6_bytes.wrap_err(e))?
-                        .into_iter().enumerate().map(
-                            |(e, endpoint)| PeerInfo {
-                                endpoints: HashSet::from_iter(vec![endpoint]),
-                                id: None,
-                                flags: flags6.as_ref().map(|f| f[e])
-                                    .unwrap_or(PeerInfo::DEFAULT_FLAGS),
-                            })
+                        .into_iter().enumerate()
+                        .map(|(e, endpoint)| PeerInfo::new(endpoint, flags6.as_ref().map(|f| f[e])))
                 );
             }
 

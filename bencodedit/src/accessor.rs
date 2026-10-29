@@ -1,4 +1,4 @@
-use std::{array::TryFromSliceError, num::TryFromIntError};
+use std::{array::TryFromSliceError, char::ParseCharError, num::TryFromIntError};
 
 use thiserror::Error;
 
@@ -47,6 +47,10 @@ pub enum BencodeAccessErrorKind {
     InvalidByteStringLength {
         error: TryFromSliceError,
     },
+    #[error("invalid char length {error}")]
+    InvalidCharLength {
+        error: ParseCharError
+    },
     #[error("invalid utf8: {error}")]
     InvalidUtf8 {
         error: Utf8Error,
@@ -84,18 +88,14 @@ impl<'a> BencodeAccessor<'a> {
 
     pub fn at(&self, index: usize) -> Result<BencodeAccessor<'a>, BencodeAccessError> {
         let Some(list) = self.value.as_list() else {
-            return Err(BencodeAccessError {
-                tree: format!("{:?}", self.root),
-                path: self.path.to_vec(),
-                kind: BencodeAccessErrorKind::NotAList,
-            });
+            return Err(self.make_err(
+                BencodeAccessErrorKind::NotAList,
+            ));
         };
         let Some(value) = list.get(index) else {
-            return Err(BencodeAccessError {
-                tree: format!("{:?}", self.root),
-                path: self.path.to_vec(),
-                kind: BencodeAccessErrorKind::IndexOutOfBound { index, len: list.len() },
-            });
+            return Err(self.make_err(
+                BencodeAccessErrorKind::IndexOutOfBound { index, len: list.len() },
+            ));
         };
         let mut path = self.path.clone();
         path.push(BencodePathComponent::Index(index));
@@ -104,11 +104,9 @@ impl<'a> BencodeAccessor<'a> {
 
     pub fn required(&self, key: &[u8]) -> Result<BencodeAccessor<'a>, BencodeAccessError> {
         let Some(accessor) = self.optional(key)? else {
-            return Err(BencodeAccessError {
-                tree: format!("{:?}", self.root),
-                path: self.path.to_vec(),
-                kind: BencodeAccessErrorKind::KeyNotFound { key: key.to_vec() },
-            });
+            return Err(self.make_err(
+                BencodeAccessErrorKind::KeyNotFound { key: key.to_vec() },
+            ));
         };
         Ok(accessor)
     }
@@ -123,11 +121,7 @@ impl<'a> BencodeAccessor<'a> {
 
     pub fn optional(&self, key: &[u8]) -> Result<Option<BencodeAccessor<'a>>, BencodeAccessError> {
         let Some(dict) = self.value.as_dict() else {
-            return Err(BencodeAccessError {
-                tree: format!("{:?}", self.root),
-                path: self.path.to_vec(),
-                kind: BencodeAccessErrorKind::NotADictionary,
-            });
+            return Err(self.make_err(BencodeAccessErrorKind::NotADictionary));
         };
         let Some(value) = dict.get(key) else {
             return Ok(None);
@@ -141,11 +135,7 @@ impl<'a> BencodeAccessor<'a> {
         where F: Fn(&[u8], BencodeAccessor<'a>) -> Result<T, BencodeAccessError>
     {
         let Some(dict) = self.value.as_dict() else {
-            return Err(BencodeAccessError {
-                tree: format!("{:?}", self.root),
-                path: self.path.to_vec(),
-                kind: BencodeAccessErrorKind::NotADictionary,
-            });
+            return Err(self.make_err(BencodeAccessErrorKind::NotADictionary));
         };
         dict.iter()
             .map(|(key, value)| {
@@ -160,11 +150,7 @@ impl<'a> BencodeAccessor<'a> {
         where F: Fn(BencodeAccessor<'a>) -> Result<T, BencodeAccessError>
     {
         let Some(list) = self.value.as_list() else {
-            return Err(BencodeAccessError {
-                tree: format!("{:?}", self.root),
-                path: self.path.to_vec(),
-                kind: BencodeAccessErrorKind::NotAList,
-            });
+            return Err(self.make_err(BencodeAccessErrorKind::NotAList));
         };
         list.iter().enumerate()
             .map(|(i, value)| {
@@ -176,11 +162,9 @@ impl<'a> BencodeAccessor<'a> {
     }
 
     pub fn as_n_bytes<const N: usize>(&self) -> Result<&'a [u8; N], BencodeAccessError> {
-        self.as_bytes()?.try_into().map_err(|error| BencodeAccessError {
-            tree: format!("{:?}", self.root),
-            path: self.path.clone(),
-            kind: BencodeAccessErrorKind::InvalidByteStringLength { error },
-        })
+        self.as_bytes()?.try_into().map_err(|error| self.make_err(
+            BencodeAccessErrorKind::InvalidByteStringLength { error },
+        ))
     }
 
     pub fn to_n_bytes<const N: usize>(&self) -> Result<[u8; N], BencodeAccessError> {
@@ -188,19 +172,15 @@ impl<'a> BencodeAccessor<'a> {
     }
 
     pub fn as_bytes(&self) -> Result<&'a [u8], BencodeAccessError> {
-        self.value.as_bytes().ok_or(BencodeAccessError {
-            tree: format!("{:?}", self.root),
-            path: self.path.clone(),
-            kind: BencodeAccessErrorKind::NotAByteString,
-        })
+        self.value.as_bytes().ok_or(self.make_err(
+            BencodeAccessErrorKind::NotAByteString,
+        ))
     }
 
     pub fn as_str(&self) -> Result<&'a str, BencodeAccessError> {
-        str::from_utf8(self.as_bytes()?).map_err(|error| BencodeAccessError {
-            tree: format!("{:?}", self.root),
-            path: self.path.clone(),
-            kind: BencodeAccessErrorKind::InvalidUtf8 { error },
-        })
+        str::from_utf8(self.as_bytes()?).map_err(|error| self.make_err(
+            BencodeAccessErrorKind::InvalidUtf8 { error },
+        ))
     }
 
     pub fn as_str_list(&self) -> Result<Vec<&'a str>, BencodeAccessError> {
@@ -211,8 +191,18 @@ impl<'a> BencodeAccessor<'a> {
         self.as_bytes().map(|s| s.to_vec())
     }
 
+    pub fn to_byte(&self) -> Result<u8, BencodeAccessError> {
+        Ok(self.as_n_bytes::<1>()?[0])
+    }
+
     pub fn to_string(&self) -> Result<String, BencodeAccessError> {
         self.as_str().map(|s| s.to_string())
+    }
+
+    pub fn to_char(&self) -> Result<char, BencodeAccessError> {
+        self.as_str()?.parse().map_err(|error| self.make_err(
+            BencodeAccessErrorKind::InvalidCharLength { error }
+        ))
     }
 
     pub fn to_string_list(&self) -> Result<Vec<String>, BencodeAccessError> {
@@ -220,33 +210,33 @@ impl<'a> BencodeAccessor<'a> {
     }
 
     pub fn to_i64(&self) -> Result<i64, BencodeAccessError> {
-        self.value.as_i64().ok_or(BencodeAccessError {
-            tree: format!("{:?}", self.root),
-            path: self.path.clone(),
-            kind: BencodeAccessErrorKind::NotAnInteger,
-        })
+        self.value.as_i64().ok_or(self.make_err(
+            BencodeAccessErrorKind::NotAnInteger,
+        ))
     }
 
     pub fn to_integer<I>(&self) -> Result<I, BencodeAccessError>
     where I: TryFrom<i64, Error = TryFromIntError>
     {
-        I::try_from(self.to_i64()?).map_err(|error| BencodeAccessError {
-            tree: format!("{:?}", self.root),
-            path: self.path.clone(),
-            kind: BencodeAccessErrorKind::FailedIntegerConversion { error },
-        })
+        I::try_from(self.to_i64()?).map_err(|error| self.make_err(
+            BencodeAccessErrorKind::FailedIntegerConversion { error },
+        ))
     }
 
     pub fn to_bool(&self) -> Result<bool, BencodeAccessError> {
         self.to_i64().map(|i| i != 0)
     }
 
-    pub fn wrap_err(&self, error: anyhow::Error) -> BencodeAccessError {
+    pub fn make_err(&self, kind: BencodeAccessErrorKind) -> BencodeAccessError {
         BencodeAccessError {
             tree: format!("{:?}", self.root),
             path: self.path.clone(),
-            kind: BencodeAccessErrorKind::CustomError { error },
+            kind,
         }
+    }
+
+    pub fn wrap_err(&self, error: anyhow::Error) -> BencodeAccessError {
+        self.make_err(BencodeAccessErrorKind::CustomError { error })
     }
 
     pub fn err_out<T>(&self, error: anyhow::Error) -> Result<T, BencodeAccessError> {

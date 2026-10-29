@@ -121,8 +121,9 @@ pub async fn request_udp(
 
     let sock = UdpSocket::bind("0.0.0.0:0").await?;
     sock.connect(
-        url.split("//").nth(1).unwrap()
-            .split("/").next().unwrap()
+        url.split("//").nth(1)
+            .and_then(|path| path.split("/").next())
+            .ok_or(anyhow!("Malformed UDP tracker URL {url}"))?
     ).await?;
 
     // connect request
@@ -179,8 +180,8 @@ pub async fn request_udp(
         &1i32.to_be_bytes()
     ); // action: announce
     rand::rng().fill_bytes(&mut request[12..16]);
-    request[16..36].copy_from_slice(info_hash.as_bytes());
-    request[36..56].copy_from_slice(client_id.as_bytes());
+    request[16..36].copy_from_slice(info_hash.as_ref());
+    request[36..56].copy_from_slice(client_id.as_ref());
     request[56..64].copy_from_slice(
         &(progress.downloaded as i64).to_be_bytes()
     );

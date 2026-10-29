@@ -8,21 +8,52 @@ use std::{
 
 use bencodedit::{accessor::BencodeAccessor, BencodeValue};
 
-pub type ClientVersion = [u8; 4];
-pub const CLIENT_VERSION: &'static ClientVersion = &[b'L', b'V', 0, 0]; // libvictoria
+pub type ClientVersion = Vec<u8>;
+pub const CLIENT_VERSION: &'static [u8; 4] = &[b'L', b'V', 0, 0]; // libvictoria
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Kademlia<const N: usize>(pub [u8; N]);
+impl<const N: usize> Kademlia<N> {
+    pub fn prefix_length(&self) -> u8 {
+        for (i, byte) in self.0.iter().enumerate() {
+            if *byte != 0 {
+                return i as u8 * 8 + byte.leading_zeros() as u8;
+            }
+        }
+        (N * 8) as u8
+    }
+}
+
+macro_rules! impl_id {
+    ($ty:ty) => {
+        impl AsRef<[u8; 20]> for $ty {
+            fn as_ref(&self) -> &[u8; 20] { &self.0 }
+        }
+        impl From<$ty> for [u8; 20] {
+            fn from(id: $ty) -> Self { id.0 }
+        }
+        impl fmt::Display for $ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}", self.0.map(|b| format!("{b:02x}")).join(""))
+            }
+        }
+        impl fmt::Debug for $ty {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{self}")
+            }
+        }
+        impl $ty {
+            pub fn kademlia(&self, other: impl AsRef<[u8; 20]>) -> Kademlia<20> {
+                Kademlia(std::array::from_fn(|i| self.0[i] ^ other.as_ref()[i]))
+            }
+            pub fn to_vec(&self) -> Vec<u8> { self.0.to_vec() }
+        }
+    };
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash(pub [u8; 20]);
-
 impl Hash {
-    pub fn from(bytes: [u8; 20]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
     pub fn from_xt(xt: &str) -> Result<Self> {
         let bytes: [u8; 20] = hex::decode(
             xt.strip_prefix("urn:btih:").ok_or(
@@ -38,63 +69,12 @@ impl Hash {
             .collect::<String>()
     }
 }
-
-impl fmt::Display for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.map(|b| format!("{b:02x}")).join(""))
-    }
-}
-impl fmt::Debug for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self}")
-    }
-}
+impl_id!(Hash);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Id(pub [u8; 20]);
-pub type PeerId = Id;
-pub type KademliaDistance = Id;
-
-impl Id {
-    pub const MIN: Self = Self([0x00; 20]);
-    pub const MAX: Self = Self([0xFF; 20]);
-    
-    pub fn from(bytes: [u8; 20]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-
-    pub fn into_bytes(self) -> [u8; 20] {
-        self.0
-    }
-
-    pub fn kademlia(&self, other: &Self) -> KademliaDistance {
-        let mut d = [0; 20];
-        for i in 0..20 {
-            d[i] = self.0[i] ^ other.0[i];
-        }
-        Self(d)
-    }
-
-    pub fn prefix_length(&self) -> u8 {
-        for i in 0..20 {
-            let byte = self.0[i];
-            if byte > 0 {
-                return (19 - i as u8) * 8
-                    +  byte.bit_width() as u8;
-            }
-        }
-        return 0;
-    }
-
+pub struct PeerId(pub [u8; 20]);
+impl PeerId {
     pub fn random() -> Self {
-        Self(rand::rng().random())
-    }
-
-    pub fn random_with_client_version() -> Self {
         let mut bytes = [0; 20];
         bytes[0..4].copy_from_slice(CLIENT_VERSION);
         rand::rng().fill_bytes(&mut bytes[4..]);
@@ -115,17 +95,16 @@ impl Id {
             .collect::<String>()
     }
 }
+impl_id!(PeerId);
 
-impl fmt::Display for PeerId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.map(|b| format!("{b:02x}")).join(""))
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeId(pub [u8; 20]);
+impl NodeId {
+    pub fn random() -> Self {
+        Self(rand::rng().random())
     }
 }
-impl fmt::Debug for PeerId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self}")
-    }
-}
+impl_id!(NodeId);
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct EndpointV4(pub SocketAddrV4);
@@ -208,6 +187,15 @@ pub enum Endpoint {
     },
 }
 
+impl From<std::net::SocketAddr> for Endpoint {
+    fn from(addr: std::net::SocketAddr) -> Self {
+        match addr {
+            std::net::SocketAddr::V4(addr) => Self::V4(EndpointV4(addr)),
+            std::net::SocketAddr::V6(addr) => Self::V6(EndpointV6(addr)),
+        }
+    }
+}
+
 impl Endpoint {
     pub fn from_str(s: &str, port: u16) -> Self {
         if let Some(e4) = EndpointV4::from_str(s, port) {
@@ -276,17 +264,45 @@ impl fmt::Display for Endpoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerInfo {
-    pub id: Option<PeerId>,
-    pub endpoints: HashSet<Endpoint>,
-    pub flags: u8,
-}
+pub struct EndpointSet(HashSet<Endpoint>);
+impl EndpointSet {
+    pub fn intersects(&self, other: &Self) -> bool {
+         !self.0.is_disjoint(&other.0)
+    }
 
-impl fmt::Display for PeerInfo {
+    pub fn merge(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+
+    pub async fn resolve(&self) -> Result<Vec<SocketAddr>> {
+        let mut addrs = Vec::new();
+        for endpoint in self {
+            addrs.push(endpoint.resolve().await?);
+        }
+        Ok(addrs)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Endpoint> {
+        self.0.iter()
+    }
+}
+impl From<Endpoint> for EndpointSet {
+    fn from(endpoint: Endpoint) -> Self {
+        Self(HashSet::from_iter([endpoint]))
+    }
+}
+impl<'a> IntoIterator for &'a EndpointSet {
+    type Item = &'a Endpoint;
+    type IntoIter = std::collections::hash_set::Iter<'a, Endpoint>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+impl fmt::Display for EndpointSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (e, endpoint) in self.endpoints.iter().enumerate() {
+        for (e, endpoint) in self.0.iter().enumerate() {
             write!(f, "{}", endpoint)?;
-            if e < self.endpoints.len() - 1 {
+            if e < self.0.len() - 1 {
                 write!(f, ", ")?;
             }
         }
@@ -294,18 +310,38 @@ impl fmt::Display for PeerInfo {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerInfo {
+    pub id: Option<PeerId>,
+    pub endpoints: EndpointSet,
+    pub flags: u8,
+}
+
+impl fmt::Display for PeerInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({}{}{}{}{})",
+            self.endpoints,
+            if self.prefers_encryption() {"E"} else {""},
+            if self.upload_only() {"S"} else {""},
+            if self.supports_utp() {"U"} else {""},
+            if self.supports_holepunch() {"H"} else {""},
+            if self.is_reachable() {"R"} else {""},
+        )
+    }
+}
+
 impl PeerInfo {
     pub fn is_same_peer(&self, other: &Self) -> bool {
         match (self.id, other.id) {
             (Some(a), Some(b)) => a == b,
-            _ => self.endpoints.intersection(&other.endpoints).next().is_some(),
+            _ => self.endpoints.intersects(&other.endpoints),
         }
     }
 
     pub fn merge(&mut self, other: Self) {
         self.id = self.id.or(other.id);
         self.flags |= other.flags;
-        self.endpoints.extend(other.endpoints);
+        self.endpoints.merge(other.endpoints);
     }
 
     pub fn prefers_encryption(&self) -> bool {
@@ -317,33 +353,33 @@ impl PeerInfo {
     pub fn supports_utp(&self) -> bool {
         (self.flags & 0x04) >= 1
     }
-    pub fn holepunch_support(&self) -> bool {
+    pub fn supports_holepunch(&self) -> bool {
         (self.flags & 0x08) >= 1
     }
-    pub fn reachable(&self) -> bool {
+    pub fn is_reachable(&self) -> bool {
         (self.flags & 0x10) >= 1
     }
 
     pub const DEFAULT_FLAGS: u8 = 0b00000000;
 
-    pub fn new(endpoint: Endpoint) -> Self {
+    pub fn new(endpoint: Endpoint, flags: Option<u8>) -> Self {
         Self {
             id: None,
-            flags: Self::DEFAULT_FLAGS,
-            endpoints: HashSet::from_iter(vec![endpoint]),
+            flags: flags.unwrap_or(Self::DEFAULT_FLAGS),
+            endpoints: EndpointSet::from(endpoint),
         }
     }
 
     pub fn from_tracker_bencode_list(list: &BencodeAccessor) -> Result<Vec<Self>> {
         Ok(list.map_list(|peer| Ok(Self {
-            id: Some(PeerId::from(peer.required(b"peer id")?.to_n_bytes()?)),
+            id: Some(PeerId(peer.required(b"peer id")?.to_n_bytes()?)),
             flags: Self::DEFAULT_FLAGS,
-            endpoints: HashSet::from_iter(vec![
+            endpoints: EndpointSet::from(
                 Endpoint::from_str(
                     peer.required(b"ip")?.as_str()?,
                     peer.required(b"port")?.to_integer()?,
                 )
-            ]),
+            ),
         }))?)
     }
 
@@ -354,7 +390,7 @@ impl PeerInfo {
             List(_) => Self::from_tracker_bencode_list(&peers),
             ByteString(peers) => {
                 Ok(Endpoint::from_compact_4_list(peers)?.into_iter()
-                    .map(Self::new).collect())
+                    .map(Self::from).collect())
             }
             _ => Err(anyhow!("'peers' must be either a list or a byte string")),
         }?;
@@ -363,7 +399,7 @@ impl PeerInfo {
                 List(_) => Self::from_tracker_bencode_list(&peers6),
                 ByteString(peers) => {
                     Ok(Endpoint::from_compact_6(peers).into_iter()
-                        .map(Self::new).collect())
+                        .map(Self::from).collect())
                 }
                 _ => Err(anyhow!("'peers6' must be either a list or a byte string")),
             }?);
@@ -373,14 +409,34 @@ impl PeerInfo {
 
     pub fn from_compact_4_list(compact: &[u8]) -> Result<Vec<Self>> {
         Ok(Endpoint::from_compact_4_list(compact)?.into_iter()
-                .map(Self::new).collect())
+                .map(Self::from).collect())
     }
+}
 
-    pub async fn resolve(&self) -> Result<Vec<SocketAddr>> {
-        let mut addrs = Vec::new();
-        for endpoint in &self.endpoints {
-            addrs.push(endpoint.resolve().await?);
+impl From<Endpoint> for PeerInfo {
+    fn from(endpoint: Endpoint) -> Self {
+        Self {
+            endpoints: EndpointSet::from(endpoint),
+            flags: Self::DEFAULT_FLAGS,
+            id: None,
         }
-        Ok(addrs)
+    }
+}
+impl From<EndpointV4> for PeerInfo {
+    fn from(endpoint: EndpointV4) -> Self {
+        Self {
+            endpoints: EndpointSet::from(Endpoint::V4(endpoint)),
+            flags: Self::DEFAULT_FLAGS,
+            id: None,
+        }
+    }
+}
+impl From<EndpointV6> for PeerInfo {
+    fn from(endpoint: EndpointV6) -> Self {
+        Self {
+            endpoints: EndpointSet::from(Endpoint::V6(endpoint)),
+            flags: Self::DEFAULT_FLAGS,
+            id: None,
+        }
     }
 }

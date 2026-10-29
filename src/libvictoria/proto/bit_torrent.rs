@@ -170,7 +170,7 @@ impl BitTorrent {
                 let mut handshake = [0u8; 68];
                 let name = format!("{peer_info}");
 
-                let addrs = peer_info.resolve().await?;
+                let addrs = peer_info.endpoints.resolve().await?;
 
                 let mut stream = TcpStream::connect(
                     addrs.iter().next().unwrap()
@@ -183,8 +183,8 @@ impl BitTorrent {
                 handshake[20 + 5] |= 0x10; // Advertise extensions
                 handshake[20 + 7] |= 0x04; // Advertise fast
                 handshake[20 + 7] |= 0x01; // Avertise DHT
-                handshake[28..48].copy_from_slice(info_hash.as_bytes());
-                handshake[48..68].copy_from_slice(local_id.as_bytes());
+                handshake[28..48].copy_from_slice(info_hash.as_ref());
+                handshake[48..68].copy_from_slice(local_id.as_ref());
                 stream.write_all(&handshake).await?;
                 trace!(peer = %name, "Sent handshake");
 
@@ -199,12 +199,12 @@ impl BitTorrent {
                     "expected handshake response to have 'BitTorrent protocol'"
                 );
                 ensure!(
-                    &handshake[28..48] == info_hash.as_bytes(),
+                    &handshake[28..48] == info_hash.as_ref(),
                     "expected handshake response to have same info hash"
                 );
                 if let Some(peer_id) = peer_info.id {
                     ensure!(
-                        &handshake[48..68] == peer_id.as_bytes(),
+                        &handshake[48..68] == peer_id.as_ref(),
                         "expected handshake response to have right peer id"
                     );
                 }
@@ -213,7 +213,7 @@ impl BitTorrent {
                 Ok(Self {
                     stream,
                     name,
-                    id: PeerId::from(handshake[48..68].try_into()?),
+                    id: PeerId(handshake[48..68].try_into()?),
                     supports_fast: handshake[20 + 7] & 0x04 > 0,
                     supports_dht: handshake[20 + 7] & 0x01 > 0,
                 })

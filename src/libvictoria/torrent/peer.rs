@@ -12,6 +12,8 @@ use crate::libvictoria::{
     types::*,
 };
 
+use super::control::DiscoveryInfo;
+
 const INITIAL_TRANSFER_MESSAGES_CAPACITY: usize = 5;
 
 const MAX_METADATA_REQUESTS: usize = 2;

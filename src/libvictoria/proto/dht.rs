@@ -1,10 +1,12 @@
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow};
 use tracing::{trace};
+
 use tokio::{
     net::UdpSocket,
 };
 use std::{
-    collections::HashMap, net::{Ipv4Addr, SocketAddrV4}, str::FromStr, time::Duration
+    collections::HashMap,
+    net::{IpAddr, SocketAddr, Ipv6Addr},
 };
 use rand::RngExt;
 
@@ -12,7 +14,6 @@ use bencodedit::{accessor::BencodeAccessor, BencodeValue};
 
 use crate::libvictoria::types::*;
 
-pub type NodeId = Id;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInfo {
     pub id: NodeId,
@@ -22,17 +23,17 @@ pub struct NodeInfo {
 impl NodeInfo {
     pub fn from_compact(compact: &[u8]) -> Result<Self> {
         if compact.len() != 26 {
-            return Err(anyhow!("A compact node needs to be 26 bytes long"));
+            return Err(anyhow!("a compact node needs to be 26 bytes long"));
         }
         Ok(Self {
-            id: NodeId::from(compact[0..20].try_into().unwrap()),
+            id: NodeId(compact[0..20].try_into().unwrap()),
             endpoint: Endpoint::from_compact_4(&compact[20..26])?,
         })
     }
     
     pub fn from_compact_list(compact: &[u8]) -> Result<Vec<Self>> {
         if !compact.len().is_multiple_of(26) {
-            return Err(anyhow!("A list of compact nodes need to be divisible by 26"));
+            return Err(anyhow!("a list of compact nodes need to be divisible by 26"));
         }
         Ok(compact.chunks_exact(26)
             .map(|c| Self::from_compact(c).unwrap())
@@ -41,11 +42,11 @@ impl NodeInfo {
 
     pub fn to_compact(&self) -> Vec<u8> {
         let mut compact = Vec::new();
-        compact.extend(self.id.as_bytes());
+        compact.extend(self.id.as_ref());
         if let Endpoint::V4(v4) = &self.endpoint {
             compact.extend(v4.to_compact());
         } else {
-            panic!("A compact node should only have an IPV4");
+            panic!("a compact node should only have an IPV4");
         }
         compact
     }
@@ -54,21 +55,21 @@ impl NodeInfo {
 type TransactionId = Vec<u8>;
 pub struct Message {
     transaction_id: TransactionId,
-    client_version: ClientVersion,
+    client_version: Option<ClientVersion>,
     pub type_of: MessageType,
 }
 
 impl Message {
-    pub fn from_bytes(
-        encoded: &[u8],
-        mut f: impl FnMut(&BencodeAccessor, &TransactionId) -> Result<MessageType>,
-    ) -> Result<Self> {
+    pub fn from_bytes<F>(encoded: &[u8], mut f: F) -> Result<Self>
+        where F: FnMut(&BencodeAccessor, char, &TransactionId) -> Result<MessageType>
+    {
         let root_val = BencodeValue::from_bytes(encoded)?.0;
         let root = BencodeAccessor::new(&root_val);
         let transaction_id = root.required(b"t")?.to_bytes()?;
+        let message_type = root.required(b"y")?.to_char()?;
         Ok(Self {
-            client_version: root.required(b"v")?.to_n_bytes()?,
-            type_of: f(&root, &transaction_id)?,
+            client_version: root.map_optional(b"v", |v| v.to_bytes())?,
+            type_of: f(&root, message_type, &transaction_id)?,
             transaction_id,
         })
     }
@@ -77,8 +78,11 @@ impl Message {
         use BencodeValue::*;
         let mut key_vals = HashMap::from([
             (b"t".into(), ByteString(self.transaction_id)),
-            (b"v".into(), ByteString(self.client_version.to_vec())),
         ]);
+        if let Some(client_version) = self.client_version {
+            key_vals.insert(b"v".into(),
+                ByteString(client_version.to_vec()));
+        }
         self.type_of.fill_bencode(&mut key_vals);
         Dictionary(key_vals).to_bytes()
     }
@@ -106,12 +110,6 @@ impl TryFrom<u8> for ErrorCode {
     }
 }
 
-#[derive(Debug)]
-pub enum PeersOrNodes {
-    Peers(Vec<EndpointV4>),
-    Nodes(Vec<NodeInfo>),
-}
-
 pub enum MessageType {
     Query {
         id: NodeId,
@@ -128,42 +126,36 @@ pub enum MessageType {
 }
 
 impl MessageType {
-    pub fn from_response_bencode(
-        root: &BencodeAccessor,
-        f: impl Fn(&BencodeAccessor) -> Result<Response>,
-    ) -> Result<Self> {
-        let y = root.required(b"y")?;
-        Ok(match y.as_n_bytes::<1>()? {
-            b"r" => {
-                let response = root.required(b"r")?;
-                Self::Response {
-                    id: NodeId::from(response.required(b"id")?.to_n_bytes()?),
-                    response: f(&response)?,
-                }
+    fn from_error_bencode(error: BencodeAccessor) -> Result<Self> {
+        Ok(Self::Error {
+            code: {
+                let code = error.at(0)?;
+                code.to_integer::<u8>()?.try_into()
+                    .map_err(|e| code.wrap_err(e))?
             },
-            b"e" => {
-                let error = root.required(b"e")?;
-                Self::Error {
-                    code: {
-                        let code = error.at(0)?;
-                        code.to_integer::<u8>()?.try_into()
-                            .map_err(|e| code.wrap_err(e))?
-                    },
-                    message: error.at(1)?.to_string()?,
-                }
-            },
-            t => y.err_out(anyhow!("invalid message type {t:?} expected r or e"))?,
+            message: error.at(1)?.to_string()?,
         })
     }
 
-    pub fn from_query_bencode(root: &BencodeAccessor) -> Result<Self> {
+    pub fn from_bencode(root: &BencodeAccessor) -> Result<Self> {
         let y = root.required(b"y")?;
-        Ok(match y.as_n_bytes::<1>()? {
-            b"q" => Self::Query {
-                id: NodeId::from(root.required(b"a")?.required(b"id")?.to_n_bytes()?),
+        Ok(match y.to_char()? {
+            'q' => Self::Query {
+                id: NodeId(root.required(b"a")?.required(b"id")?.to_n_bytes()?),
                 query: Query::from_bencode(root)?,
             },
-            t => y.err_out(anyhow!("invalid message type {t:?} expected q"))?,
+            'r' => {
+                match (root.optional(b"r")?, root.optional(b"e")?) {
+                    (Some(response), None) => Self::Response {
+                        id: NodeId(response.required(b"id")?.to_n_bytes()?),
+                        response: Response::from_bencode(&response)?,
+                    },
+                    (None, Some(error)) => Self::from_error_bencode(error)?,
+                    _ => root.err_out(anyhow!("a response needs either a response or an error body"))?,
+                }
+            },
+            'e' => Self::from_error_bencode(root.required(b"e")?)?,
+            t => y.err_out(anyhow!("invalid message type {t} expected r, q or e"))?,
         })
     }
 
@@ -208,18 +200,18 @@ pub enum Query {
 
 impl Query {
     pub fn from_bencode(root: &BencodeAccessor) -> Result<Self> {
-        let params = root.required(b"a")?;
         let q = root.required(b"q")?;
-        Ok(match q.required(b"q")?.as_str()? {
+        let params = root.required(b"a")?;
+        Ok(match q.as_str()? {
             "ping" => Self::Ping,
             "find_node" => Self::FindNode {
-                target: NodeId::from(params.required(b"target")?.to_n_bytes()?),
+                target: NodeId(params.required(b"target")?.to_n_bytes()?),
             },
             "get_peers" => Self::GetPeers {
-                info_hash: Hash::from(params.required(b"id")?.to_n_bytes()?),
+                info_hash: Hash(params.required(b"info_hash")?.to_n_bytes()?),
             },
             "announce_peer" => Self::AnnouncePeer {
-                info_hash: Hash::from(params.required(b"info_hash")?.to_n_bytes()?),
+                info_hash: Hash(params.required(b"info_hash")?.to_n_bytes()?),
                 implied_port: params.required(b"implied_port")?.to_bool()?,
                 port: params.required(b"port")?.to_integer()?,
                 token: params.required(b"token")?.to_bytes()?,
@@ -231,7 +223,7 @@ impl Query {
     pub fn fill_bencode(self, key_vals: &mut HashMap<Vec<u8>, BencodeValue>, id: NodeId) {
         use BencodeValue::*;
         let mut params = HashMap::from([
-            (b"id".into(), ByteString(id.as_bytes().to_vec()))
+            (b"id".into(), ByteString(id.to_vec()))
         ]);
         match self {
             Self::Ping => {
@@ -239,15 +231,15 @@ impl Query {
             },
             Self::FindNode { target } => {
                 key_vals.insert(b"q".into(), ByteString(b"find_node".to_vec()));
-                params.insert(b"target".into(), ByteString(target.as_bytes().to_vec()));
+                params.insert(b"target".into(), ByteString(target.to_vec()));
             }
             Self::GetPeers { info_hash } => {
                 key_vals.insert(b"q".into(), ByteString(b"get_peers".to_vec()));
-                params.insert(b"info_hash".into(), ByteString(info_hash.as_bytes().to_vec()));
+                params.insert(b"info_hash".into(), ByteString(info_hash.to_vec()));
             }
             Self::AnnouncePeer { implied_port, info_hash, port, token } => {
                 key_vals.insert(b"q".into(), ByteString(b"announce_peer".to_vec()));
-                params.insert(b"info_hash".into(), ByteString(info_hash.as_bytes().to_vec()));
+                params.insert(b"info_hash".into(), ByteString(info_hash.to_vec()));
                 params.insert(b"token".into(), ByteString(token));
                 params.insert(b"implied_port".into(), Integer(if implied_port {1} else {0}));
                 params.insert(b"port".into(), Integer(port as i64));
@@ -258,50 +250,27 @@ impl Query {
 }
 
 #[derive(Debug)]
-pub enum Response {
-    Ping,
-    AnnouncePeer,
-    GetPeers {
-        token: Vec<u8>,
-        peers_or_nodes: PeersOrNodes,
-    },
-    FindNode {
-        nodes: Vec<NodeInfo>,
-    },
+pub struct Response {
+    pub token: Option<Vec<u8>>,
+    pub nodes: Option<Vec<NodeInfo>>,
+    pub values: Option<Vec<EndpointV4>>,
 }
 
 impl Response {
-    pub fn from_ping_bencode(response: &BencodeAccessor) -> Result<Self> {
-        Ok(Self::Ping)
-    }
-
-    pub fn from_announce_peer_bencode(response: &BencodeAccessor) -> Result<Self> {
-        Ok(Self::AnnouncePeer)
-    }
-
-    pub fn from_find_node_bencode(response: &BencodeAccessor) -> Result<Self> {
-        let nodes = response.required(b"nodes")?;
-        Ok(Self::FindNode {
-            nodes: NodeInfo::from_compact_list(nodes.as_bytes()?)
-                .map_err(|e| nodes.wrap_err(e))?,
-        })
-    }
-
-    pub fn from_get_peers_bencode(response: &BencodeAccessor) -> Result<Self> {
-        use PeersOrNodes::*;
-        Ok(Self::GetPeers {
-            token: response.required(b"token")?.to_bytes()?,
-            peers_or_nodes: match (response.optional(b"values")?, response.optional(b"nodes")?) {
-                (Some(values), None) => Peers(
-                    EndpointV4::from_compact_list(values.as_bytes()?)
-                        .map_err(|e| values.wrap_err(e))?
-                ),
-                (None, Some(nodes)) => Nodes(
-                    NodeInfo::from_compact_list(nodes.as_bytes()?)
-                        .map_err(|e| nodes.wrap_err(e))?
-                ),
-                _ => response.err_out(anyhow!("One key named values or nodes is required"))?,
-            }
+    pub fn from_bencode(response: &BencodeAccessor) -> Result<Self> {
+        Ok(Self {
+            token: response.map_optional(b"token", |token|
+                token.to_bytes()
+            )?,
+            values: response.map_optional(b"values", |values|
+                values.map_list(|value|
+                    Ok(EndpointV4::from_compact(value.as_n_bytes()?))
+                )
+            )?,
+            nodes: response.map_optional(b"nodes", |nodes|
+                NodeInfo::from_compact_list(nodes.as_bytes()?)
+                    .map_err(|e| nodes.wrap_err(e))
+            )?,
         })
     }
 
@@ -309,31 +278,20 @@ impl Response {
     pub fn to_bencode(self, id: NodeId) -> BencodeValue {
         use BencodeValue::*;
         let mut response = HashMap::from([
-            (b"id".into(), ByteString(id.into_bytes().to_vec()))
+            (b"id".into(), ByteString(id.to_vec()))
         ]);
-        match self {
-            Self::Ping => (),
-            Self::AnnouncePeer => (),
-            Self::FindNode { nodes } => {
-                response.insert(b"nodes".into(), ByteString(
-                    nodes.iter().flat_map(|n| n.to_compact()).collect()
-                ));
-            },
-            Self::GetPeers { token, peers_or_nodes } => {
-                response.insert(b"token".into(), ByteString(token));
-                match peers_or_nodes {
-                    PeersOrNodes::Nodes(nodes) => {
-                        response.insert(b"nodes".to_vec(),  ByteString(
-                            nodes.iter().flat_map(|n| n.to_compact()).collect()
-                        ));
-                    }
-                    PeersOrNodes::Peers(peers) => {
-                        response.insert(b"peers".to_vec(),  ByteString(
-                            peers.iter().flat_map(|n| n.to_compact()).collect()
-                        ));
-                    }
-                }
-            }
+        if let Some(nodes) = self.nodes {
+            response.insert(b"nodes".into(), ByteString(
+                nodes.iter().flat_map(|n| n.to_compact()).collect()
+            ));
+        }
+        if let Some(values) = self.values {
+            response.insert(b"values".to_vec(),  List(
+                values.iter().map(|v| ByteString(v.to_compact().into())).collect()
+            ));
+        }
+        if let Some(token) = self.token {
+            response.insert(b"token".into(), ByteString(token));
         }
         Dictionary(response)
     }
@@ -341,7 +299,8 @@ impl Response {
 
 pub struct DHT {
     id: NodeId,
-    socket: UdpSocket,
+    socket4: UdpSocket,
+    buffer: [u8; 2048],
     queries: HashMap<TransactionId, Query>,
 }
 
@@ -349,30 +308,31 @@ impl DHT {
     pub async fn bind(id: NodeId, port: u16) -> Result<Self> {
         Ok(Self {
             id,
-            socket: UdpSocket::bind(
-                SocketAddrV4::new(Ipv4Addr::from_str("0.0.0.0").unwrap(),  port)
+            buffer: [0; _],
+            socket4: UdpSocket::bind(
+                SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), port)
             ).await?,
             queries: HashMap::new(),
         })
     }
 
-    pub async fn receive(&mut self) -> Result<Message> {
-        let mut response_buffer = [0; 1024];
-        let (size, addr) = self.socket.recv_from(&mut response_buffer).await?;
-        let message = Message::from_bytes(&response_buffer[..size], |root, transaction_id| {
-            match self.queries.remove(transaction_id) {
-                None => MessageType::from_query_bencode(root),
-                Some(query) => {
-                    MessageType::from_response_bencode(root, match query {
-                        Query::AnnouncePeer {..} => Response::from_announce_peer_bencode,
-                        Query::FindNode {..} => Response::from_find_node_bencode,
-                        Query::GetPeers {..} => Response::from_get_peers_bencode,
-                        Query::Ping => Response::from_ping_bencode,
-                    })
+    pub async fn receive(&mut self) -> Result<(Endpoint, Message, Option<Query>)> {
+        let (size, addr) = self.socket4.recv_from(&mut self.buffer).await?;
+        let mut ret_query = None;
+        let message = Message::from_bytes(&self.buffer[..size], |root, message_type, transaction_id| {
+            match message_type {
+                'q' => MessageType::from_bencode(root),
+                'r' | 'e' => match self.queries.remove(transaction_id) {
+                    Some(query) => {
+                        ret_query = Some(query.clone());
+                        MessageType::from_bencode(root)
+                    }.context(format!("Associated with {query:?}")),
+                    None => Err(anyhow!("Reply to unsolicited messag")),
                 }
+                c => Err(anyhow!("Unsupported message type  {c}"))
             }
         })?;
-        Ok(message)
+        Ok((Endpoint::from(addr), message, ret_query))
     }
 
     pub async fn query(
@@ -381,10 +341,11 @@ impl DHT {
         query: Query,
     ) -> Result<()> {
         let transaction_id: [u8; 2] = rand::rng().random();
-        self.socket.send_to(
+        self.queries.insert(transaction_id.to_vec(), query.clone());
+        self.socket4.send_to(
             &Message {
                 transaction_id: transaction_id.to_vec(),
-                client_version: CLIENT_VERSION.to_owned(),
+                client_version: Some(CLIENT_VERSION.to_vec()),
                 type_of: MessageType::Query {
                     id: self.id,
                     query: query.clone(),
@@ -392,7 +353,6 @@ impl DHT {
             }.to_bytes(),
             endpoint.resolve().await?,
         ).await?;
-        self.queries.insert(transaction_id.to_vec(), query);
         Ok(())
     }
 
@@ -402,10 +362,10 @@ impl DHT {
         transaction_id: Vec<u8>,
         response: Response,
     ) -> Result<()> {
-        self.socket.send_to(
+        self.socket4.send_to(
             &Message {
                 transaction_id,
-                client_version: CLIENT_VERSION.to_owned(),
+                client_version: Some(CLIENT_VERSION.to_vec()),
                 type_of: MessageType::Response {
                     id: self.id,
                     response,

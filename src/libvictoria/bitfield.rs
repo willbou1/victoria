@@ -42,6 +42,10 @@ impl Bitfield {
         self.buffer[index / 8] & Self::bit(index) != 0
     }
 
+    pub fn is_all_set(&self) -> bool {
+        self.num_set == self.size
+    }
+
     pub fn num_set(&self) -> usize {
         self.num_set
     }
@@ -69,11 +73,11 @@ impl Bitfield {
         self.num_set = self.count_set();
     }
 
-    pub fn percentage(&self) -> f64 {
+    pub fn percentage(&self) -> f32 {
         if self.size == 0 {
             return 100.;
         }
-        self.num_set as f64 * 100. / self.size as f64
+        self.num_set as f32 * 100. / self.size as f32
     }
 
     pub fn subfield(&self, range: Range<usize>) -> Self {
@@ -117,7 +121,9 @@ impl fmt::Display for Bitfield {
             let end = ((c + 1) * len + chunks - 1) / chunks;
             
             let filled = if f.alternate() {
-                (start..end).any(|i| self.is_set(i))
+                // Filling a chunk when only one bit is set can looks ridiculous so we compromise
+                (start..end).filter(|i| self.is_set(*i)).count()
+                    * 4 > end - start
             } else {
                 (start..end).all(|i| self.is_set(i))
             };

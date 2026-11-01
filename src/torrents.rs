@@ -18,6 +18,7 @@ use crossterm::{
     terminal,
     cursor::{MoveTo},
     event::{Event, KeyCode, KeyModifiers, EnableMouseCapture, DisableMouseCapture, MouseEventKind, MouseButton, self},
+    style::Stylize,
 };
 use interprocess::local_socket::{
     tokio::prelude::*,
@@ -25,10 +26,14 @@ use interprocess::local_socket::{
 };
 use directories::{BaseDirs, UserDirs};
 use bencodedit::{accessor::BencodeAccessor, BencodeValue};
-use super::libvictoria::{
-    torrent::{Torrent, control::*},
-    dht::{DHTManager, DHTEvent},
-    types::*
+
+use super::{
+    libvictoria::{
+        torrent::{Torrent, control::*},
+        dht::{DHTManager, DHTEvent},
+        types::*,
+    },
+    rows::*,
 };
 use whodatrow::{*, state::*};
 
@@ -232,21 +237,40 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
                                     Char('t') => key_state = KeyState::ToggleSection,
                                     Char('f') => key_state = KeyState::FocusSection,
 
-                                    Char('d') | Char('r') => {
-                                        if let Some(Focus {row: torrent_hash, ..}) = state.follow_focus() {
-                                            if let Some(index) = torrent_tasks
+                                    Char('d') | Char('r') | Char('s') | Char('p') => {
+                                        if let Some(Focus {row: torrent_hash, section}) = state.follow_focus() {
+                                            if let Some(torrent_index) = torrent_tasks
                                                 .iter()
                                                 .position(|tt| tt.rx.borrow().id() == torrent_hash)
                                             {
                                                 match key.code {
                                                     Char('d') => {
-                                                        let tt = torrent_tasks.remove(index);
+                                                        let tt = torrent_tasks.remove(torrent_index);
                                                         let _ = tt.tx.send(Command::Delete).await;
                                                         tt.task.await??;
                                                     }
                                                     Char('r') => {
-                                                        let tt = &torrent_tasks[index];
+                                                        let tt = &torrent_tasks[torrent_index];
                                                         let _ = tt.tx.send(Command::ReloadTrackers).await;
+                                                    }
+                                                    Char('s') => {
+                                                        let tt = &torrent_tasks[torrent_index];
+                                                        let _ = tt.tx.send(Command::ToggleSequential).await;
+                                                    }
+                                                    Char('p') => {
+                                                        if let Some((Section::Progress(ProgressSection::Files), state)) = section {
+                                                            if let Some(Focus {row: file_hash, ..}) = state.follow_focus() {
+                                                                if let Some((file_index, priority)) = torrent_tasks[torrent_index].rx.borrow()
+                                                                .transfer.as_ref().and_then(|t|
+                                                                    t.files.iter().enumerate()
+                                                                    .find(|(_, file)| file.id() == file_hash)
+                                                                    .map(|(f, file)| (f, file.priority))
+                                                                ) {
+                                                                    let tt = &torrent_tasks[torrent_index];
+                                                                    let _ = tt.tx.send(Command::SetPriority(file_index, priority.next())).await;
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                     _ => (),
                                                 }
@@ -296,31 +320,76 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
 
                 {
                     const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
                     let mut test_data: Vec<_> = dht_rx.borrow().buckets.as_ref().iter()
-                        .map(|b| b.nodes.len()).collect();
-                    let num = test_data.len();
-                    let height = 7;
-                    if (width as usize) < num {
-                        test_data = test_data.chunks(num.div_ceil(width as usize))
-                        .map(|data| data.iter().sum())
-                        .collect()
+                        .map(|b| b.nodes.len())
+                        .collect();
+
+                    let height = 4;
+                    let width = width as usize;
+                    let max = *test_data.iter().max().unwrap_or(&0);
+                    let scale_width = max.to_string().len() + 3; // label + " ┤ "
+
+                    let plot_width = width.saturating_sub(scale_width);
+
+                    if !test_data.is_empty() && plot_width < test_data.len() {
+                        let chunk_size = test_data.len().div_ceil(plot_width.max(1));
+                        test_data = test_data.chunks(chunk_size)
+                            .map(|data| data.iter().sum())
+                            .collect();
                     }
-                    let bar_width = width as usize / test_data.len();
+
+                    if test_data.is_empty() || plot_width == 0 {
+                        //return;
+                    }
+
+                    let bar_width = plot_width / test_data.len();
                     let taken = bar_width * test_data.len();
-                    let remaining = width as usize - taken;
-                    let max = *test_data.iter().max().unwrap();
+                    let remaining = plot_width - taken;
+
+                    let max = *test_data.iter().max().unwrap_or(&0);
+                    let max_width = max.to_string().len();
+                    let scale_width = max_width + 3;
                     let num_div = height * 8;
+
                     for l in 0..height {
-                        let d_lower = (height - 1 - l) * 8;
-                        for v in &test_data {
-                            let d = (num_div * v).checked_div(max).unwrap_or(0);
-                            let d_sub = (d as i32 - d_lower as i32).max(0).min(8);
-                            frame.extend(std::iter::repeat_n(BLOCKS[d_sub as usize], bar_width));
+                        if l == 0 {
+                            frame.push_str(&format!("{max:>max_width$} ┤ "));
+                        } else if l == height - 1 {
+                            frame.push_str(&format!("{:>max_width$} ┤ ", 0));
+                        } else {
+                            frame.push_str(&format!("{:>max_width$} │ ", ""));
                         }
+
+                        let d_lower = (height - 1 - l) * 8;
+
+                        for v in &test_data {
+                            let d = (num_div * *v).checked_div(max).unwrap_or(0);
+                            let d_sub = (d as i32 - d_lower as i32).clamp(0, 8);
+                            let block = BLOCKS[d_sub as usize];
+                            let colored = if *v == 0 {
+                                block.dark_grey()
+                            } else if *v * 4 < max {
+                                block.blue()
+                            } else if *v * 2 < max {
+                                block.green()
+                            } else if *v * 4 < max * 3 {
+                                block.yellow()
+                            } else {
+                                block.red()
+                            }.to_string();
+                            frame.extend(std::iter::repeat_n(colored, bar_width));
+                        }
+
                         frame.extend(std::iter::repeat_n(' ', remaining));
                         frame.push_str("\r\n");
                     }
-                    frame.extend(std::iter::repeat_n('―', taken));
+
+                    frame.extend(std::iter::repeat_n(' ', scale_width - 3));
+                    frame.push_str(" ╰");
+                    frame.extend(std::iter::repeat_n('─', taken.saturating_sub(2)));
+
+                    let _ = frame.pop();
                 }
                 let _ = frame.pop();
 

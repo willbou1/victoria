@@ -10,7 +10,7 @@ use crate::libvictoria::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(2);
-const REJECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const REJECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 enum BlockState {

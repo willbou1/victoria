@@ -72,6 +72,7 @@ pub struct Peer {
     pub state: PeerState,
     pub info: PeerInfo,
     pub client: Option<String>,
+    pub max_requests: Option<usize>,
     pub supports_fast: bool,
     pub supports_pex: bool,
     pub supports_metadata: bool,
@@ -88,6 +89,7 @@ impl Peer {
             info,
             supports_fast,
             supports_dht,
+            max_requests: None,
             supports_metadata: false,
             supports_pex: false,
             uploaded_metadata_this_second: 0,
@@ -171,10 +173,15 @@ impl Peer {
         }
     }
 
-    pub fn receive_extension_handshake(&mut self, client: Option<String>, extensions: HashMap<String, u8>) {
+    pub fn receive_extension_handshake(
+        &mut self, client: Option<String>,
+        max_requests: Option<usize>,
+        extensions: HashMap<String, u8>
+    ) {
         self.client = client;
-        self.supports_metadata |= extensions.contains_key("ut_metadata");
-        self.supports_pex |= extensions.contains_key("ut_pex");
+        self.supports_metadata = extensions.contains_key("ut_metadata");
+        self.supports_pex = extensions.contains_key("ut_pex");
+        self.max_requests = max_requests;
         if let PeerState::Connected {received_extension_handshake, ..} = &mut self.state {
             *received_extension_handshake = true;
         }

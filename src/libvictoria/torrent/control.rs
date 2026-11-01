@@ -52,8 +52,8 @@ pub struct TransferProgress {
 }
 
 impl TransferProgress {
-    pub fn percentage(&self) -> f64 {
-        self.downloaded as f64 * 100. / self.size as f64
+    pub fn percentage(&self) -> f32 {
+        self.downloaded as f32 * 100. / self.size as f32
     }
 
     pub fn eta(&self) -> Option<Duration> {
@@ -66,12 +66,32 @@ impl TransferProgress {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilePriority {
     Low,
     Normal,
     Medium,
     High,
+}
+
+impl FilePriority {
+    pub fn next(&self) -> Self {
+        match self {
+            Self::Low => Self::Normal,
+            Self::Normal => Self::Medium,
+            Self::Medium => Self::High,
+            Self::High => Self::Low,
+        }
+    }
+
+    pub fn previous(&self) -> Self {
+        match self {
+            Self::Low => Self::High,
+            Self::Normal => Self::Low,
+            Self::Medium => Self::Normal,
+            Self::High => Self::Medium,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -171,6 +191,7 @@ impl TrackerInfo {
 
 #[derive(Debug)]
 pub struct Progress {
+    pub sequential: bool,
     pub num_discovery_attempts: usize,
     pub num_peers: usize,
     pub num_connected_peers: usize,
@@ -181,12 +202,30 @@ pub struct Progress {
     pub trackers: HashMap<String, TrackerInfo>,
 }
 
+impl Progress {
+    pub fn new(display_name: String, metadata_bitfield: Bitfield) -> Self {
+        Self {
+            sequential: false,
+            display_name,
+            num_peers: 0,
+            num_connected_peers: 0,
+            num_discovery_attempts: 0,
+            transfer: None,
+            metadata_bitfield,
+            peers: HashMap::new(),
+            trackers: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Command {
     Stop,
     Pause,
     Resume,
     Delete,
+    ToggleSequential,
+    SetPriority(usize, FilePriority),
     ReloadTrackers,
 }
 

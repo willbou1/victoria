@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr, Ipv6Addr},
 };
-use rand::RngExt;
+use rand::{rng, RngExt};
 
 use bencodedit::{accessor::BencodeAccessor, BencodeValue};
 
@@ -340,7 +340,7 @@ impl DHT {
         endpoint: &Endpoint,
         query: Query,
     ) -> Result<()> {
-        let transaction_id: [u8; 2] = rand::rng().random();
+        let transaction_id: [u8; 2] = rng().random();
         self.queries.insert(transaction_id.to_vec(), query.clone());
         self.socket4.send_to(
             &Message {

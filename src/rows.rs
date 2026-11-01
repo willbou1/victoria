@@ -382,7 +382,8 @@ impl Row for Progress {
         use Alignment::*;
         &[
             Column {
-                value: |_, _| String::from("▶"),
+                value: |prog, _| format!("▶ {}",
+                    if prog.sequential {'→'} else {'⤭'}),
                 ..Column::DEFAULT
             },
             Column {
@@ -439,7 +440,11 @@ impl Row for Progress {
                 value: |prog, width| prog.transfer.as_ref()
                     .map_or(
                         format!("{:WIDTH$}", prog.metadata_bitfield, WIDTH = width.unwrap()),
-                        |t| format!("{:WIDTH$}", t.piece_bitfield, WIDTH = width.unwrap())
+                        |t| if prog.sequential {
+                            format!("{:WIDTH$}", t.piece_bitfield, WIDTH = width.unwrap())
+                        } else {
+                            format!("{:#WIDTH$}", t.piece_bitfield, WIDTH = width.unwrap())
+                        }
                     ),
                 ..Column::DEFAULT
             },

@@ -4,7 +4,7 @@ use tokio::{
     net::UdpSocket,
 };
 use reqwest::Url;
-use rand::Rng;
+use rand::{rng, Rng};
 use std::{
     fmt,
     time::{Duration},
@@ -133,7 +133,7 @@ pub async fn request_udp(
     request[8..12].copy_from_slice(
         &0i32.to_be_bytes()
     ); // action: connect
-    rand::rng().fill_bytes(&mut request[12..16]);
+    rng().fill_bytes(&mut request[12..16]);
 
     // connect response
     for n in 0..(MAX_ATTEMPTS + 1) {
@@ -179,7 +179,7 @@ pub async fn request_udp(
     request[8..12].copy_from_slice(
         &1i32.to_be_bytes()
     ); // action: announce
-    rand::rng().fill_bytes(&mut request[12..16]);
+    rng().fill_bytes(&mut request[12..16]);
     request[16..36].copy_from_slice(info_hash.as_ref());
     request[36..56].copy_from_slice(client_id.as_ref());
     request[56..64].copy_from_slice(
@@ -195,7 +195,7 @@ pub async fn request_udp(
         &(progress.event.clone() as i32).to_be_bytes()
     );
     request[84..88].fill(0); // TODO fill ip
-    rand::rng().fill_bytes(&mut request[88..92]);
+    rng().fill_bytes(&mut request[88..92]);
     request[92..96].copy_from_slice(
         &(-1i32).to_be_bytes()
     ); // num_want

@@ -11,6 +11,7 @@ use std::{
     collections::{HashMap, VecDeque},
     io::SeekFrom,
 };
+use rand::{rng, seq::IndexedRandom};
 use tracing::{info_span, info, debug, trace};
 
 use crate::libvictoria::{
@@ -20,17 +21,15 @@ use crate::libvictoria::{
         bit_torrent::Message,
         tracker,
     },
-    torrent::PieceProgress,
+    torrent::{
+        PieceProgress,
+        piece::Piece,
+        control::*
+    },
     types::*,
 };
-use super::piece::Piece;
-use super::control::*;
 use connection::Connection;
 use piece_cache::PieceCache;
-
-const PIEC_CACHE_CAPACITY: usize = 8;
-const BLOCK_SIZE: usize = 16 * 1024;
-fn block_index(begin: usize) -> usize {begin / BLOCK_SIZE}
 
 pub struct Transfer {
     pub(crate) metadata: Metadata,
@@ -40,12 +39,23 @@ pub struct Transfer {
     config_rx: watch::Receiver<Config>,
     pieces: Vec<Piece>,
     piece_bitfield: Bitfield,
+    priority_cursor: usize,
     connections: HashMap<PeerId, Connection>,
     piece_cache: PieceCache,
     uploaded: usize,
 }
 
 impl Transfer {
+    const PIEC_CACHE_CAPACITY: usize = 8;
+    const PRIORITIES: [FilePriority; 10] = {use FilePriority::*; [
+        Low,
+        Normal, Normal,
+        Medium, Medium, Medium,
+        High, High, High, High,
+    ]};
+    const BLOCK_SIZE: usize = 16 * 1024;
+    fn block_index(begin: usize) -> usize {begin / Self::BLOCK_SIZE}
+
     pub async fn new(
         metadata: Metadata,
         info_hash: Hash,
@@ -65,8 +75,9 @@ impl Transfer {
         });
         Ok(Self {
             info_hash,
-            piece_cache: PieceCache::new(PIEC_CACHE_CAPACITY),
+            piece_cache: PieceCache::new(Self::PIEC_CACHE_CAPACITY),
             pieces,
+            priority_cursor: 0,
             metadata,
             tracker_tx,
             progress_tx,
@@ -196,7 +207,7 @@ impl Transfer {
 
             Message::Request { index, begin, length } => {
                 self.check_piece_length(index, begin, length, false, "request")?;
-                let block_index = block_index(begin);
+                let block_index = Self::block_index(begin);
                 debug!("Got request {index}:{block_index}");
                 if self.connections.get(peer_id).map(|c| c.can_upload()).unwrap_or(false)
                     && self.piece_bitfield.is_set(index) {
@@ -214,13 +225,13 @@ impl Transfer {
 
             Message::Cancel { index, begin, length } => {
                 self.check_piece_length(index, begin, length, true, "cancel")?;
-                let block_index = block_index(begin);
+                let block_index = Self::block_index(begin);
                 debug!("Got cancel {index}:{block_index}");
             }
 
             Message::Piece { index, begin, piece: block, response_time } => {
                 self.check_piece_begin(index, begin, true, "piece")?;
-                let block_index = block_index(begin);
+                let block_index = Self::block_index(begin);
 
                 // maybe keep track of later pieces just for response time
                 if !self.pieces[index].has_obtrined(block_index) {
@@ -295,7 +306,7 @@ impl Transfer {
             // extensions
             Message::Reject { index, begin, length } => {
                 self.check_piece_length(index, begin, length, true, "reject")?;
-                let block_index = block_index(begin);
+                let block_index = Self::block_index(begin);
                 debug!("Got rejection for block {index}:{block_index}");
                 // TODO implement BEP semantics properly
                 let who_downloading = self.pieces[index].who_downloading(block_index);
@@ -351,7 +362,7 @@ impl Transfer {
                 let written = bitfield.is_set(p);
                 pieces.push(Piece::new(
                     Some(p),
-                    BLOCK_SIZE,
+                    Self::BLOCK_SIZE,
                     metadata.piece_length(p),
                     metadata.pieces[p],
                     written
@@ -361,7 +372,7 @@ impl Transfer {
             for p in 0..metadata.num_pieces {
                 pieces.push(Piece::new(
                     Some(p),
-                    BLOCK_SIZE,
+                    Self::BLOCK_SIZE,
                     metadata.piece_length(p),
                     metadata.pieces[p],
                     false
@@ -426,8 +437,8 @@ impl Transfer {
         let span = info_span!("connection", id = %peer_id);
         let _enter = span.enter();
         let piece_length = self.metadata.piece_length(piece_index);
-        let begin = BLOCK_SIZE * block_index;
-        let length = (piece_length - begin).min(BLOCK_SIZE);
+        let begin = Self::BLOCK_SIZE * block_index;
+        let length = (piece_length - begin).min(Self::BLOCK_SIZE);
         if let Some(c) = self.connections.get_mut(peer_id) {
             c.request(piece_index, begin, length).await;
         }
@@ -435,34 +446,87 @@ impl Transfer {
         Ok(())
     }
 
-    fn find_or_keep_piece(&self, target_connection: &Connection) -> Option<usize> {
-        if let Some(cursor) = target_connection.piece_cursor
-            && self.pieces[cursor].is_available() {
-                return Some(cursor);
+    fn find_or_keep_piece(&mut self, target_peer_id: &PeerId) -> Option<usize> {
+        if self.piece_bitfield.is_all_set() {
+            return None;
         }
-        
+
+        let target_connection = &self.connections[target_peer_id];
+        // Connection already has a piece so keep it if still available
+        if let Some(cursor) = target_connection.piece_cursor
+            && self.pieces[cursor].is_available()
+        {
+            return Some(cursor);
+        }
+        // Check if other connections are already working on a piece that is available
         for con in self.connections.values() {
-            if let Some(cursor) = con.piece_cursor {
-                if self.pieces[cursor].is_available() && target_connection.has_piece(cursor) {
-                        return Some(cursor);
+            if let Some(cursor) = con.piece_cursor
+                && self.pieces[cursor].is_available()
+                && target_connection.has_piece(cursor)
+            {
+                return Some(cursor);
+            }
+        }
+
+        // Find new piece
+        let sequential = self.progress_tx.borrow().sequential;
+        for _ in 0..Self::PRIORITIES.len() {
+            self.priority_cursor = (self.priority_cursor + 1) % Self::PRIORITIES.len();
+            let pieces: Vec<_> = self.progress_tx.borrow()
+                .transfer.as_ref().unwrap().files.iter().enumerate()
+                .filter(|(_, f)| f.priority == Self::PRIORITIES[self.priority_cursor])
+                .flat_map(|(f, _)| self.metadata.files[f].pieces.clone())
+                .map(|p| (p, &self.pieces[p]))
+                .collect();
+
+            if sequential {
+                for (p, piece) in pieces {
+                    if piece.is_available() && target_connection.has_piece(p) {
+                        return Some(p);
+                    }
+                }
+            } else {
+                let mut active = Vec::new();
+                let mut inactive = Vec::new();
+                for (p, piece) in pieces {
+                    if piece.is_available() && target_connection.has_piece(p) {
+                        if piece.is_active() {
+                            active.push(p);
+                        } else {
+                            inactive.push(p);
+                        }
+                    }
+                }
+                if let Some(p) = active.choose(&mut rng())
+                    .or_else(|| inactive.choose(&mut rng()))
+                    .copied()
+                {
+                    return Some(p);
                 }
             }
         }
-
-        for (p, piece) in self.pieces.iter().enumerate() {
-            if piece.is_available() && target_connection.has_piece(p) {
-                return Some(p);
-            }
-        }
-
         None
+    }
+
+    pub fn handle_command(&self, command: Command) {
+        use Command::*;
+        match command {
+            SetPriority(index, priority) => {
+                self.progress_tx.send_modify(|prog| {
+                    prog.transfer.as_mut()
+                        .and_then(|t| t.files.get_mut(index))
+                        .map(|f| f.priority = priority);
+                });
+            }
+            _ => (),
+        }
     }
 
     async fn dispatch_requests(&mut self) -> Result<()> {
         let peer_ids: Vec<_> = self.connections.keys().copied().collect();
         for peer_id in peer_ids {
             while self.connections[&peer_id].can_request() {
-                match self.find_or_keep_piece(&self.connections[&peer_id]) {
+                match self.find_or_keep_piece(&peer_id) {
                     Some(cursor) => {
                         self.connections.entry(peer_id)
                             .and_modify(|p| p.piece_cursor = Some(cursor));
@@ -561,7 +625,7 @@ impl Transfer {
         self.check_piece_index(index, op)?;
         if boundary {
             ensure!(
-                begin % BLOCK_SIZE == 0,
+                begin % Self::BLOCK_SIZE == 0,
                 "Begin of {op} is not at block boundary, got {begin}",
             );
         }
@@ -576,7 +640,7 @@ impl Transfer {
     fn check_piece_length(&self, index: usize, begin: usize, length: usize, boundary: bool, op: &str) -> Result<()> {
         self.check_piece_begin(index, begin, boundary, op)?;
         let piece_length = self.metadata.piece_length(index);
-        let block_length = (piece_length - begin).min(BLOCK_SIZE);
+        let block_length = (piece_length - begin).min(Self::BLOCK_SIZE);
         if boundary {
             ensure!(
                 length == block_length,

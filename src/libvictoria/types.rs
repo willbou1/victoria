@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use rand::{Rng, RngExt};
+use rand::{rng, Rng, RngExt};
 use std::{
     collections::HashSet,
     fmt,
@@ -43,7 +43,7 @@ macro_rules! impl_id {
             }
         }
         impl $ty {
-            pub fn kademlia(&self, other: impl AsRef<[u8; 20]>) -> Kademlia<20> {
+            pub fn kademlia(&self, other: &impl AsRef<[u8; 20]>) -> Kademlia<20> {
                 Kademlia(std::array::from_fn(|i| self.0[i] ^ other.as_ref()[i]))
             }
             pub fn to_vec(&self) -> Vec<u8> { self.0.to_vec() }
@@ -77,7 +77,7 @@ impl PeerId {
     pub fn random() -> Self {
         let mut bytes = [0; 20];
         bytes[0..4].copy_from_slice(CLIENT_VERSION);
-        rand::rng().fill_bytes(&mut bytes[4..]);
+        rng().fill_bytes(&mut bytes[4..]);
         Self(bytes)
     }
 
@@ -100,8 +100,22 @@ impl_id!(PeerId);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub [u8; 20]);
 impl NodeId {
-    pub fn random() -> Self {
-        Self(rand::rng().random())
+    pub fn random() -> Self { Self(rng().random()) }
+
+    pub fn random_with_prefix_length(&self, prefix_length: u8) -> Self {
+        let mut bytes = self.0;
+        let first = prefix_length as usize / 8;
+        let bit = prefix_length % 8;
+        if first < 20 {
+            let mask = 0x80 >> bit;
+            bytes[first] ^= mask;
+            let random = rng().random::<u8>();
+            let suffix_mask = mask - 1;
+            bytes[first] = (bytes[first] & !suffix_mask)
+                | (random & suffix_mask);
+            rng().fill_bytes(&mut bytes[first + 1..]);
+        }
+        Self(bytes)
     }
 }
 impl_id!(NodeId);

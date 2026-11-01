@@ -264,14 +264,15 @@ impl BitTorrent {
         };
         
         let writer_task = async move {
-            // Send extension handshake
+            // Send extension handshake TODO move this to torrent loop
             Self::send(&mut writer, &name, Message::ExtensionHandshake {
                 extensions: HashMap::from_iter(vec![
                     (String::from("ut_pex"), PEX_ID),
                     (String::from("ut_metadata"), METADATA_ID),
                 ]),
-                client: Some(String::from("custom")),
-                max_requests: Some(70),
+                client: Some(format!("victoria/{}", env!("CARGO_PKG_VERSION"))),
+                // TODO respect this for other client
+                max_requests: Some(200),
                 metadata_size: None,
             }, write_request_times.clone(), write_extensions.clone()).await?;
 

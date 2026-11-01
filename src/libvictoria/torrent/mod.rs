@@ -137,7 +137,7 @@ impl Torrent {
         let metadata_piece = Piece::new(None, METADATA_BLOCK_SIZE, 0, info_hash, false);
 
         Ok(Some(Self::new(
-            &display_name,
+            display_name,
             info_hash,
             config_rx,
             dht_tx,
@@ -168,7 +168,7 @@ impl Torrent {
         let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes);
 
         Ok(Some(Self::new(
-            &metadata.name.clone(),
+            metadata.name.clone(),
             info_hash,
             config_rx,
             dht_tx,
@@ -216,7 +216,7 @@ impl Torrent {
             let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes);
 
             Self::new(
-                &metadata.name.clone(),
+                metadata.name.clone(),
                 info_hash,
                 config_rx,
                 dht_tx,
@@ -232,10 +232,11 @@ impl Torrent {
             );
             let metadata_piece = Piece::new(None, METADATA_BLOCK_SIZE, 0, info_hash, false);
             let display_name = path.file_stem()
-                .ok_or(anyhow!("No file name to use as display name"))?.to_string_lossy();
+                .ok_or(anyhow!("No file name to use as display name"))?
+                .to_string_lossy().to_string();
 
             Self::new(
-                &display_name,
+                display_name,
                 info_hash,
                 config_rx,
                 dht_tx,
@@ -247,7 +248,7 @@ impl Torrent {
     }
 
     async fn new(
-        display_name: &str,
+        display_name: String,
         info_hash: Hash,
         config_rx: watch::Receiver<Config>,
         dht_tx: mpsc::Sender<DHTEvent>,
@@ -260,16 +261,9 @@ impl Torrent {
 
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
 
-        let (progress_tx, progress_rx) = watch::channel(Progress {
-            display_name: display_name.to_string(),
-            num_peers: 0,
-            num_connected_peers: 0,
-            num_discovery_attempts: 0,
-            transfer: None,
-            metadata_bitfield: metadata_piece.to_bitfield(),
-            peers: HashMap::new(),
-            trackers: HashMap::new(),
-        });
+        let (progress_tx, progress_rx) = watch::channel(
+            Progress::new(display_name.clone(), metadata_piece.to_bitfield())
+        );
         let (command_tx, command_rx) = mpsc::channel(10);
 
         let (tracker_event_tx, tracker_event_rx) = mpsc::channel(10);
@@ -305,7 +299,7 @@ impl Torrent {
         };
 
         Ok(Self {
-            display_name: display_name.to_string(),
+            display_name,
             peers: HashMap::new(),
             peer_tx: tx,
             tracker_tx,
@@ -357,7 +351,6 @@ impl Torrent {
             let mut tick_interval = tokio::time::interval(Duration::from_secs(1));
             let mut autosave_interval = tokio::time::interval(AUTOSAVE_INTERVAL);
             let mut dht_interval = tokio::time::interval(DHT_INTERVAL);
-            dht_interval.tick().await;
             loop {
                 select! {
                     event = self.rx.recv() => {
@@ -369,10 +362,9 @@ impl Torrent {
                         }
                     },
                     _ = dht_interval.tick() => {
-                        let _ = self.dht_tx.send(DHTEvent::InfoHashRequest(
-                            self.info_hash,
-                            self.peer_tx.clone(),
-                        )).await;
+                        let _ = self.dht_tx.send(
+                            DHTEvent::InfoHashRequest(self.info_hash, self.peer_tx.clone())
+                        ).await;
                     },
                     _ = tick_interval.tick() => self.tick().await?,
                     command = self.command_rx.recv() => {
@@ -400,10 +392,18 @@ impl Torrent {
 
     async fn handle_command(&mut self, command: Command) -> Result<()> {
         match command {
+            Command::ToggleSequential => {
+                self.progress_tx.send_modify(|p| p.sequential = !p.sequential);
+            }
             Command::ReloadTrackers => {
                 self.tracker_event_tx.send(TrackerEvent::Reload).await?;
+                let _ = self.dht_tx.send(
+                    DHTEvent::InfoHashRequest(self.info_hash, self.peer_tx.clone())
+                ).await;
             }
-            _ => (),
+            command => {
+                self.transfer.as_ref().map(|t| t.handle_command(command));
+            },
         }
         Ok(())
     }
@@ -474,8 +474,6 @@ impl Torrent {
     }
 
     fn discover(&mut self, info: &PeerInfo, mechanism: DiscoveryMechanism) {
-        // Make sure to add discovery mechanism to existing peers
-
         match self.peers.iter().find(|(_, c)| c.info.is_same_peer(info)).clone() {
             Some((id, _)) => {
                 self.progress_tx.send_modify(|p| {
@@ -634,7 +632,7 @@ impl Torrent {
 
                         Message::ExtensionHandshake { extensions, client, max_requests, metadata_size } => {
                             debug!("Got extension handshake {extensions:?} {client:?} {max_requests:?}");
-                            peer.receive_extension_handshake(client, extensions);
+                            peer.receive_extension_handshake(client, max_requests, extensions);
                             if let Some(metadata_size) = metadata_size
                                 && self.transfer.is_none()
                                 && metadata_size / (16 * 1024) > self.metadata.num_blocks()

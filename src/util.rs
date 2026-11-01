@@ -35,7 +35,7 @@ pub fn pretty_duration(duration: Duration) -> String {
     )
 }
 
-pub fn pretty_percentage(percentage: f64) -> String {
+pub fn pretty_percentage(percentage: f32) -> String {
     format!("{percentage:.2}")
         .trim_end_matches('0')
         .trim_end_matches('.')

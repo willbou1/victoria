@@ -88,7 +88,12 @@ where
 {
     fn header(&self) -> &'static str;
     fn key(&self) -> char;
-    fn content(&self, row: &R, state: Option<&mut TableState<R::SectionKey>>, width: usize) -> String;
+    fn content(
+        &self,
+        row: &R,
+        state: Option<&mut TableState<R::SectionKey>>,
+        width: usize,
+    ) -> String;
     fn section_key(&self) -> Option<R::SectionKey>;
     fn new_state(&self) -> Option<TableState<R::SectionKey>>;
 }
@@ -105,7 +110,12 @@ where
         self.key
     }
 
-    fn content(&self, row: &R, _state: Option<&mut TableState<R::SectionKey>>, width: usize) -> String {
+    fn content(
+        &self,
+        row: &R,
+        _state: Option<&mut TableState<R::SectionKey>>,
+        width: usize,
+    ) -> String {
         (self.content)(row, width)
     }
 
@@ -131,10 +141,15 @@ where
         self.key
     }
 
-    fn content(&self, row: &R, state: Option<&mut TableState<R::SectionKey>>, width: usize) -> String {
-        (self.content)(row, width).map(
-            |(mut table, rows)| table.render(rows, state.unwrap(), width).to_string()
-        ).unwrap_or_default()
+    fn content(
+        &self,
+        row: &R,
+        state: Option<&mut TableState<R::SectionKey>>,
+        width: usize,
+    ) -> String {
+        (self.content)(row, width)
+            .map(|(mut table, rows)| table.render(rows, state.unwrap(), width).to_string())
+            .unwrap_or_default()
     }
 
     fn section_key(&self) -> Option<R::SectionKey> {
@@ -160,17 +175,20 @@ impl<R: Row> Column<R> {
 pub type RowHash = u64;
 pub trait Row {
     type SectionKey: Copy;
-    
+
     fn id(&self) -> RowHash;
-    fn columns() -> &'static [Column<Self>] where Self: Sized {
-        &[]
-    }
-    fn sub_sections() -> &'static [&'static dyn SubSection<Self>]
-    where Self: Sized,
+    fn columns() -> &'static [Column<Self>]
+    where
+        Self: Sized,
     {
         &[]
     }
-
+    fn sub_sections() -> &'static [&'static dyn SubSection<Self>]
+    where
+        Self: Sized,
+    {
+        &[]
+    }
 }
 
 pub struct Table<R>
@@ -199,9 +217,7 @@ where
             padding,
             render: String::new(),
             widths: Vec::new(),
-            flex_total: R::columns().iter()
-                .map(|c| c.flex.unwrap_or(0))
-                .sum(),
+            flex_total: R::columns().iter().map(|c| c.flex.unwrap_or(0)).sum(),
             row: 0,
             col: 0,
         }
@@ -219,7 +235,7 @@ where
         self.row += 1;
         self.render.push('\r');
         self.render.push('\n');
-    } 
+    }
 
     fn render_n(&mut self, c: char, width: usize) {
         self.render.extend(std::iter::repeat_n(c, width));
@@ -243,17 +259,21 @@ where
 
     fn render_sub_sections(&mut self, state: &mut RowState<R::SectionKey>) -> usize {
         let start = self.render.len();
-        self.render_color(
-            if self.focused {Color::Green} else {Color::White}
-        );
+        self.render_color(if self.focused {
+            Color::Green
+        } else {
+            Color::White
+        });
         self.render.push('┤');
         self.reset_color();
         self.render.push(' ');
         let mut col = self.col + self.padding + 2;
         for (s, section) in R::sub_sections().iter().enumerate() {
-            self.render_color(
-                if state.show_sections[s] {Color::Green} else {Color::White}
-            );
+            self.render_color(if state.show_sections[s] {
+                Color::Green
+            } else {
+                Color::White
+            });
             self.render.push('[');
             self.render.push(section.key());
             self.render.push(']');
@@ -265,9 +285,11 @@ where
             state.place_section(s, col, self.row, width, 1);
             col += width + 1;
         }
-        self.render_color(
-            if self.focused {Color::Green} else {Color::White}
-        );
+        self.render_color(if self.focused {
+            Color::Green
+        } else {
+            Color::White
+        });
         self.render.push('├');
         self.reset_color();
         visible_width(&self.render[start..self.render.len()])
@@ -286,11 +308,17 @@ where
         }
     }
 
-    fn render_h_sparator(&mut self, junction: Junction, state: Option<&mut RowState<R::SectionKey>>) {
+    fn render_h_sparator(
+        &mut self,
+        junction: Junction,
+        state: Option<&mut RowState<R::SectionKey>>,
+    ) {
         let (left, junction_char, right) = Self::junction_chars(junction);
-        self.render_color(
-            if self.focused {Color::Green} else {Color::White}
-        );
+        self.render_color(if self.focused {
+            Color::Green
+        } else {
+            Color::White
+        });
         self.render.push(left);
         let mut sections_len = self.padding;
         self.render_n('─', self.padding);
@@ -298,9 +326,11 @@ where
         if let Junction::SubTop = junction {
             sections_len += self.render_sub_sections(state.unwrap());
         }
-        self.render_color(
-            if self.focused {Color::Green} else {Color::White}
-        );
+        self.render_color(if self.focused {
+            Color::Green
+        } else {
+            Color::White
+        });
         let mut end = 0;
         for (c, &width) in self.widths.clone().iter().enumerate() {
             end += self.padding * 2 + width;
@@ -318,15 +348,17 @@ where
     }
 
     fn render_v_separator(&mut self, marked: bool) {
-        self.render_color(
-            if marked && self.focused {Color::Magenta}
-            else if self.focused {Color::Green}
-            else {Color::White}
-        );
+        self.render_color(if marked && self.focused {
+            Color::Magenta
+        } else if self.focused {
+            Color::Green
+        } else {
+            Color::White
+        });
         self.render.push('│');
         self.reset_color();
     }
-    
+
     fn render_sub(&mut self, width: usize, row: &R, state: &mut RowState<R::SectionKey>) {
         for (i, opened) in state.show_sections.iter().enumerate() {
             if !*opened {
@@ -338,17 +370,15 @@ where
                 state.sub_table_states[i].as_mut(),
                 width - 2 * (self.padding + 1),
             );
-            state.sub_table_states[i].as_mut()
+            state.sub_table_states[i]
+                .as_mut()
                 .map(|s| s.position(self.col + self.padding, self.row));
 
             for line in sub.lines() {
                 self.render_v_separator(state.marked);
                 self.render_padding();
                 self.render.push_str(line);
-                self.render_n(
-                    ' ',
-                    width - visible_width(line) - self.padding - 2,
-                );
+                self.render_n(' ', width - visible_width(line) - self.padding - 2);
                 self.render_v_separator(state.marked);
                 self.render_newline();
             }
@@ -378,7 +408,12 @@ where
         state.show_total && R::columns().iter().filter(|c| c.total.is_some()).count() > 0
     }
 
-    pub fn render<'a, I>(&mut self, rows: I, state: &mut TableState<R::SectionKey>, width: usize) -> &str
+    pub fn render<'a, I>(
+        &mut self,
+        rows: I,
+        state: &mut TableState<R::SectionKey>,
+        width: usize,
+    ) -> &str
     where
         I: IntoIterator<Item = &'a R>,
     {
@@ -389,34 +424,30 @@ where
         state.reconcile(rows.iter().map(|r| r.id()).collect());
         self.render.clear();
         self.focused = state.prev_focused.map_or(true, |pf| pf) && state.focused_section.is_none();
-        
+
         let mut filled_columns: Vec<Vec<_>> = Vec::new();
         for col in self.columns {
             let mut filled_column = vec![col.header.to_string()];
-            filled_column.extend(
-                rows.iter().map(|r| {
-                    if col.flex.is_none() {
-                        self.chop_string(col.max_width.unwrap_or(usize::MAX), &(col.value)(r, None))
-                    } else {
-                        String::new()
-                    }
-                })
-            );
+            filled_column.extend(rows.iter().map(|r| {
+                if col.flex.is_none() {
+                    self.chop_string(col.max_width.unwrap_or(usize::MAX), &(col.value)(r, None))
+                } else {
+                    String::new()
+                }
+            }));
             if Self::show_total(state) {
-                filled_column.push(
-                    col.total.map(|t| t(&rows)).unwrap_or(String::new())
-                );
+                filled_column.push(col.total.map(|t| t(&rows)).unwrap_or(String::new()));
             }
             filled_columns.push(filled_column);
         }
 
         let natural_widths: Vec<usize> = filled_columns
-            .iter().map(|fc| {
-                fc.iter().map(|cell| visible_width(cell)).max().unwrap_or(0)
-            })
+            .iter()
+            .map(|fc| fc.iter().map(|cell| visible_width(cell)).max().unwrap_or(0))
             .collect();
 
-        let taken_width: usize = natural_widths.iter()
+        let taken_width: usize = natural_widths
+            .iter()
             .zip(self.columns.iter())
             .filter(|(_, col)| col.flex.is_none())
             .map(|(width, _)| *width)
@@ -442,7 +473,7 @@ where
                         .for_each(|(cell, row)| {
                             *cell = self.chop_string(
                                 self.widths[c],
-                                &(col.value)(row, Some(self.widths[c]))
+                                &(col.value)(row, Some(self.widths[c])),
                             );
                         });
                 }
@@ -454,7 +485,11 @@ where
 
         self.render_h_sparator(Junction::Top, None);
         self.render_cells(
-            &self.columns.iter().map(|c| c.header.to_string()).collect::<Vec<_>>(),
+            &self
+                .columns
+                .iter()
+                .map(|c| c.header.to_string())
+                .collect::<Vec<_>>(),
             Color::Red,
             false,
         );
@@ -464,8 +499,14 @@ where
             let first_row = self.row;
             let row_state = state.row_states.get_mut(&row.id()).unwrap();
             self.render_cells(
-                &filled_columns.iter().map(|c| c[r + 1].clone()).collect::<Vec<_>>(),
-                if let Some(hash) = state.selected_row && hash == row.id() && self.focused {
+                &filled_columns
+                    .iter()
+                    .map(|c| c[r + 1].clone())
+                    .collect::<Vec<_>>(),
+                if let Some(hash) = state.selected_row
+                    && hash == row.id()
+                    && self.focused
+                {
                     Color::Green
                 } else {
                     Color::White
@@ -482,19 +523,24 @@ where
             row_state.place(self.col, first_row, width - 2, self.row - first_row);
         }
 
-        let bottom_sub = rows.last().map_or(
-            false,
-            |row| state.row_states.get(&row.id()).map_or(false, |r| r.show_sub)
-        );
+        let bottom_sub = rows.last().map_or(false, |row| {
+            state
+                .row_states
+                .get(&row.id())
+                .map_or(false, |r| r.show_sub)
+        });
 
         if Self::show_total(state) {
             if bottom_sub {
-                    self.render_h_sparator(Junction::SubTotal, None);
+                self.render_h_sparator(Junction::SubTotal, None);
             } else {
                 self.render_h_sparator(Junction::Center, None);
             }
             self.render_cells(
-                &filled_columns.iter().map(|c| c[rows.len() + 1].clone()).collect::<Vec<_>>(),
+                &filled_columns
+                    .iter()
+                    .map(|c| c[rows.len() + 1].clone())
+                    .collect::<Vec<_>>(),
                 Color::Yellow,
                 false,
             );

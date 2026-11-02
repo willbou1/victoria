@@ -1,18 +1,15 @@
 use rand::seq::SliceRandom;
-use tracing::{Instrument, info_span, debug, trace};
-use std::{
-    fmt,
-    time::{Duration},
-};
+use std::{fmt, time::Duration};
 use tokio::{
-    sync::{mpsc, watch},
     select,
+    sync::{mpsc, watch},
 };
+use tracing::{Instrument, debug, info_span, trace};
 
 use crate::libvictoria::{
+    proto::tracker::{self, TrackerResponse, request_http, request_udp},
     torrent,
     torrent::control::*,
-    proto::tracker::{TrackerResponse, request_http, request_udp, self},
     types::*,
 };
 
@@ -51,12 +48,14 @@ impl Trackers {
         for (t, tier_urls) in urls.iter_mut().enumerate() {
             for url in &*tier_urls {
                 progress_tx.send_modify(|p| {
-                    p.trackers.entry(url.clone()).or_insert(TrackerInfo::new(t, url.clone()));
+                    p.trackers
+                        .entry(url.clone())
+                        .or_insert(TrackerInfo::new(t, url.clone()));
                 });
             }
             tier_urls.shuffle(&mut rand::rng());
         }
-        
+
         Self {
             urls,
             info_hash,
@@ -83,8 +82,9 @@ impl Trackers {
             self.announce().await;
 
             let mut sleep = Box::pin(tokio::time::sleep(Duration::from_secs(
-                self.interval.unwrap_or(60)
-                    .max(self.min_interval.unwrap_or(0))
+                self.interval
+                    .unwrap_or(60)
+                    .max(self.min_interval.unwrap_or(0)),
             )));
             loop {
                 select!(
@@ -126,7 +126,9 @@ impl Trackers {
                     }
                 );
             }
-        }.instrument(span.clone()).await
+        }
+        .instrument(span.clone())
+        .await
     }
 
     fn reset(&mut self) {
@@ -142,11 +144,11 @@ impl Trackers {
 
         for tier_urls in self.urls.iter_mut() {
             for url in &*tier_urls {
-                    self.progress_tx.send_modify(|p| {
-                        p.trackers.entry(url.clone()).and_modify(|t| {
-                            t.succeeded = None;
-                        });
+                self.progress_tx.send_modify(|p| {
+                    p.trackers.entry(url.clone()).and_modify(|t| {
+                        t.succeeded = None;
                     });
+                });
             }
         }
 
@@ -154,7 +156,7 @@ impl Trackers {
             if !ANNOUNCE_TO_ALL_TIERS {
                 self.reset();
             }
-            
+
             let mut good = Vec::new();
             let mut bad = Vec::new();
             for u in 0..self.urls[t].len() {
@@ -167,23 +169,20 @@ impl Trackers {
                 });
                 async {
                     match match url.split(":").next().unwrap() {
-                        "http" | "https" => request_http(
-                            &url,
-                            &self.client_id,
-                            &self.info_hash,
-                            &self.progress,
-                        ).await,
+                        "http" | "https" => {
+                            request_http(&url, &self.client_id, &self.info_hash, &self.progress)
+                                .await
+                        }
                         "udp" => match tokio::time::timeout(
                             Duration::from_secs(10),
-                            request_udp(
-                                &url,
-                                &self.client_id,
-                                &self.info_hash,
-                                &self.progress,
-                            ),
-                        ).await {
+                            request_udp(&url, &self.client_id, &self.info_hash, &self.progress),
+                        )
+                        .await
+                        {
                             Ok(response) => response,
-                            Err(_) => Err(anyhow::anyhow!("Exceeded tracker manager timeout for UDP")),
+                            Err(_) => {
+                                Err(anyhow::anyhow!("Exceeded tracker manager timeout for UDP"))
+                            }
                         },
                         proto => Err(anyhow::anyhow!("Unsopported protocol {proto}")),
                     } {
@@ -194,9 +193,15 @@ impl Trackers {
                                     t.seeders = response.seeders.map(|s| s as usize);
                                     t.leechers = response.leechers.map(|l| l as usize);
                                     t.interval = Some(Duration::from_secs(response.interval));
-                                    t.min_interval = response.min_interval.map(|i| Duration::from_secs(i));
-                                    t.endpoints = Some(response.peers.iter()
-                                        .map(|p| p.endpoints.iter().cloned().next().unwrap()).collect());
+                                    t.min_interval =
+                                        response.min_interval.map(|i| Duration::from_secs(i));
+                                    t.endpoints = Some(
+                                        response
+                                            .peers
+                                            .iter()
+                                            .map(|p| p.endpoints.iter().cloned().next().unwrap())
+                                            .collect(),
+                                    );
                                 });
                             });
                             self.update(response);
@@ -214,8 +219,13 @@ impl Trackers {
                             bad.push(url);
                         }
                     }
-                    let _ = self.tx.send(torrent::Event::Tracker(self.peers.clone())).await;
-                }.instrument(span).await
+                    let _ = self
+                        .tx
+                        .send(torrent::Event::Tracker(self.peers.clone()))
+                        .await;
+                }
+                .instrument(span)
+                .await
             }
             good.extend(bad);
             self.urls[t] = good;
@@ -232,7 +242,7 @@ impl Trackers {
 
     fn update(&mut self, response: TrackerResponse) {
         trace!("Got tracker response:\n{response}");
-        
+
         if let Some(interval) = self.interval {
             self.interval = Some(response.interval.min(interval));
         } else {

@@ -1,12 +1,13 @@
 pub mod accessor;
 
+use std::{collections::HashMap, fmt, num::ParseIntError, str::Utf8Error};
 use thiserror::Error;
-use std::{
-    collections::HashMap, fmt, num::ParseIntError, str::Utf8Error
-};
 
 #[derive(Debug, Error)]
-#[error("Bencode error at {position}: {kind}\n{}", String::from_utf8_lossy(encoded))]
+#[error(
+    "Bencode error at {position}: {kind}\n{}",
+    String::from_utf8_lossy(encoded)
+)]
 pub struct BencodeError {
     pub encoded: Vec<u8>,
     pub position: usize,
@@ -17,20 +18,19 @@ pub struct BencodeError {
 pub enum BencodeErrorKind {
     #[error("no bencode value")]
     Empty,
-    
+
     #[error("invalid value starting with {byte}")]
-    InvalidValue {
-        byte: u8,
-    },
+    InvalidValue { byte: u8 },
 
     #[error("unterminated dictionary")]
     UnterminatedDictionary,
     #[error("a dictionary key should be a byte string")]
     DictionaryKeyIsNotAByteString,
-    #[error("dictionary key '{}' has no associated value", String::from_utf8_lossy(key))]
-    DictionaryKeyHasNoValue {
-        key: Vec<u8>,
-    },
+    #[error(
+        "dictionary key '{}' has no associated value",
+        String::from_utf8_lossy(key)
+    )]
+    DictionaryKeyHasNoValue { key: Vec<u8> },
 
     #[error("unterminated list")]
     UnterminatedList,
@@ -38,29 +38,18 @@ pub enum BencodeErrorKind {
     #[error("no semicolon in byte string")]
     MissingColonInByteString,
     #[error("invalid byte string length: {error}")]
-    InvalidByteStringLength {
-        error: ParseIntError,
-    },
+    InvalidByteStringLength { error: ParseIntError },
     #[error("byte string length must be valid UTF-8: {error}")]
-    InvalidUtf8ByteStringLength {
-        error: Utf8Error,
-    },
+    InvalidUtf8ByteStringLength { error: Utf8Error },
     #[error("expected byte string of length {expected}, but got {got}")]
-    InsufficientByteStringLength {
-        expected: usize,
-        got: usize,
-    },
+    InsufficientByteStringLength { expected: usize, got: usize },
 
     #[error("unterminated integer")]
     UnterminatedInteger,
     #[error("integer must be valid UTF-8: {error}")]
-    InvalidUtf8Integer {
-        error: Utf8Error,
-    },
+    InvalidUtf8Integer { error: Utf8Error },
     #[error("invalid integer: {error}")]
-    InvalidInteger {
-        error: ParseIntError,
-    },
+    InvalidInteger { error: ParseIntError },
 }
 
 #[derive(Clone)]
@@ -77,18 +66,12 @@ impl fmt::Debug for BencodeValue {
             Self::ByteString(bytes) => {
                 write!(f, "ByteString({:?})", String::from_utf8_lossy(bytes))
             }
-            Self::Integer(value) => {
-                f.debug_tuple("Integer").field(value).finish()
-            }
-            Self::List(values) => {
-                f.debug_tuple("List").field(values).finish()
-            }
+            Self::Integer(value) => f.debug_tuple("Integer").field(value).finish(),
+            Self::List(values) => f.debug_tuple("List").field(values).finish(),
             Self::Dictionary(dict) => {
                 let dict: HashMap<_, _> = dict
                     .iter()
-                    .map(|(key, value)| {
-                        (String::from_utf8_lossy(key), value)
-                    })
+                    .map(|(key, value)| (String::from_utf8_lossy(key), value))
                     .collect();
 
                 f.debug_tuple("Dictionary").field(&dict).finish()
@@ -137,105 +120,99 @@ impl BencodeValue {
                 encoded.push(b':');
                 encoded.extend(byte_string);
                 encoded
-            },
+            }
             BencodeValue::Integer(integer) => {
                 let mut encoded = vec![b'i'];
                 encoded.extend(integer.to_string().bytes());
                 encoded.push(b'e');
                 encoded
-            },
+            }
             BencodeValue::List(list) => {
-            let mut encoded = vec![b'l'];
-                encoded.extend(
-                    list.iter().flat_map(Self::to_bytes)
-                );
+                let mut encoded = vec![b'l'];
+                encoded.extend(list.iter().flat_map(Self::to_bytes));
                 encoded.push(b'e');
-                encoded 
+                encoded
             }
             BencodeValue::Dictionary(dic) => {
                 let mut encoded = vec![b'd'];
                 let mut entries: Vec<_> = dic.iter().collect();
                 entries.sort_by_key(|(key, _)| *key);
                 for (key, val) in entries {
-                    encoded.extend(
-                        BencodeValue::ByteString(key.to_vec()).to_bytes()
-                    );
+                    encoded.extend(BencodeValue::ByteString(key.to_vec()).to_bytes());
                     encoded.extend(val.to_bytes());
                 }
                 encoded.push(b'e');
                 encoded
-            },
+            }
         }
     }
 
     pub fn from_dictionary_bytes(
         encoded: &[u8],
         mut position: usize,
-   ) -> Result<(Self, usize), BencodeError> {
-       use BencodeErrorKind::*;
-       let mut key_vals = HashMap::new();
-       let start = position;
+    ) -> Result<(Self, usize), BencodeError> {
+        use BencodeErrorKind::*;
+        let mut key_vals = HashMap::new();
+        let start = position;
 
-       loop {
-           if position >= encoded.len() {
-               return Err(BencodeError {
-                   encoded: encoded.to_vec(),
-                   position: start,
-                   kind: UnterminatedDictionary,
-               });
-           }
-           if encoded[position] == b'e' {
-               return Ok((Self::Dictionary(key_vals), position + 1));
-           }
-           
-           let (key, val_pos) = Self::from_bytes_internal(encoded, position)?.unwrap();
-           let Self::ByteString(key) = key else {
-               return Err(BencodeError {
-                   encoded: encoded.to_vec(),
-                   position,
-                   kind: DictionaryKeyIsNotAByteString,
-               });
-           };
-           let Some((value, next_position)) =
-               Self::from_bytes_internal(encoded, val_pos)?
-               else {
-                   return Err(BencodeError {
-                       encoded: encoded.to_vec(),
-                       position: position,
-                       kind: DictionaryKeyHasNoValue { key },
-                   });
-               };
+        loop {
+            if position >= encoded.len() {
+                return Err(BencodeError {
+                    encoded: encoded.to_vec(),
+                    position: start,
+                    kind: UnterminatedDictionary,
+                });
+            }
+            if encoded[position] == b'e' {
+                return Ok((Self::Dictionary(key_vals), position + 1));
+            }
 
-           key_vals.insert(key, value);
-           position = next_position;
-       }
+            let (key, val_pos) = Self::from_bytes_internal(encoded, position)?.unwrap();
+            let Self::ByteString(key) = key else {
+                return Err(BencodeError {
+                    encoded: encoded.to_vec(),
+                    position,
+                    kind: DictionaryKeyIsNotAByteString,
+                });
+            };
+            let Some((value, next_position)) = Self::from_bytes_internal(encoded, val_pos)? else {
+                return Err(BencodeError {
+                    encoded: encoded.to_vec(),
+                    position: position,
+                    kind: DictionaryKeyHasNoValue { key },
+                });
+            };
+
+            key_vals.insert(key, value);
+            position = next_position;
+        }
     }
 
     pub fn from_list_bytes(
         encoded: &[u8],
         mut position: usize,
-   ) -> Result<(Self, usize), BencodeError> {
-       use BencodeErrorKind::*;
-       let mut list = vec![];
-       let start = position;
+    ) -> Result<(Self, usize), BencodeError> {
+        use BencodeErrorKind::*;
+        let mut list = vec![];
+        let start = position;
 
-       loop {
-           if position >= encoded.len() {
-               return Err(BencodeError {
-                   encoded: encoded.to_vec(),
-                   position: start,
-                   kind: UnterminatedList,
-               });
-           }
-           if encoded[position] == b'e' {
-               return Ok((Self::List(list), position + 1));
-           }
-           
-           let (val, next_position) = Self::from_bytes_internal(encoded, position)?.unwrap();
-           list.push(val);
+        loop {
+            if position >= encoded.len() {
+                return Err(BencodeError {
+                    encoded: encoded.to_vec(),
+                    position: start,
+                    kind: UnterminatedList,
+                });
+            }
+            if encoded[position] == b'e' {
+                return Ok((Self::List(list), position + 1));
+            }
 
-           position = next_position;
-       }
+            let (val, next_position) = Self::from_bytes_internal(encoded, position)?.unwrap();
+            list.push(val);
+
+            position = next_position;
+        }
     }
 
     pub fn from_bytes(encoded: &[u8]) -> Result<(Self, &[u8]), BencodeError> {
@@ -249,7 +226,10 @@ impl BencodeValue {
         Ok((val, &encoded[next_position..]))
     }
 
-    fn from_bytes_internal(encoded: &[u8], position: usize) -> Result<Option<(Self, usize)>, BencodeError> {
+    fn from_bytes_internal(
+        encoded: &[u8],
+        position: usize,
+    ) -> Result<Option<(Self, usize)>, BencodeError> {
         if position >= encoded.len() {
             return Ok(None);
         }
@@ -267,18 +247,20 @@ impl BencodeValue {
                         encoded: encoded.to_vec(),
                         position,
                         kind: UnterminatedInteger,
-                    })? + position;
+                    })?
+                    + position;
 
                 let integer_bytes = &encoded[(position + 1)..e_index];
 
-                let integer_string = str::from_utf8(integer_bytes)
-                    .map_err(|error| BencodeError {
+                let integer_string =
+                    str::from_utf8(integer_bytes).map_err(|error| BencodeError {
                         encoded: encoded.to_vec(),
                         position,
                         kind: InvalidUtf8Integer { error },
                     })?;
 
-                let integer = integer_string.parse::<i64>()
+                let integer = integer_string
+                    .parse::<i64>()
                     .map_err(|error| BencodeError {
                         encoded: encoded.to_vec(),
                         position,
@@ -296,18 +278,19 @@ impl BencodeValue {
                         encoded: encoded.to_vec(),
                         position,
                         kind: MissingColonInByteString,
-                    })? + position;
+                    })?
+                    + position;
 
                 let number_bytes = &encoded[position..colon_index];
 
-                let number_string = str::from_utf8(number_bytes)
-                    .map_err(|error| BencodeError {
-                        encoded: encoded.to_vec(),
-                        position,
-                        kind: InvalidUtf8ByteStringLength { error },
-                    })?;
+                let number_string = str::from_utf8(number_bytes).map_err(|error| BencodeError {
+                    encoded: encoded.to_vec(),
+                    position,
+                    kind: InvalidUtf8ByteStringLength { error },
+                })?;
 
-                let number = number_string.parse::<usize>()
+                let number = number_string
+                    .parse::<usize>()
                     .map_err(|error| BencodeError {
                         encoded: encoded.to_vec(),
                         position,
@@ -335,9 +318,10 @@ impl BencodeValue {
             _ => Err(BencodeError {
                 encoded: encoded.to_vec(),
                 position,
-                kind: InvalidValue { byte: encoded[position] },
+                kind: InvalidValue {
+                    byte: encoded[position],
+                },
             }),
         }
     }
 }
-

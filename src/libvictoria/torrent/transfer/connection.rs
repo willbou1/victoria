@@ -1,16 +1,8 @@
 use anyhow::{Result, ensure};
-use tokio::{
-    sync::mpsc,
-};
-use std::{
-    time::{Duration},
-};
+use std::time::Duration;
+use tokio::sync::mpsc;
 
-use crate::libvictoria::{
-    bitfield::Bitfield,
-    proto::bit_torrent::{Message},
-    types::*,
-};
+use crate::libvictoria::{bitfield::Bitfield, proto::bit_torrent::Message, types::*};
 
 const UPLOAD_LIMIT: usize = 32 * 1024; // b/s per peer
 
@@ -24,7 +16,7 @@ const MAX_REQUESTS_STEP: usize = 2;
 
 pub struct Connection {
     id: PeerId,
-    
+
     pub supports_fast: bool,
     pub piece_cursor: Option<usize>,
     tx: mpsc::Sender<Message>,
@@ -51,7 +43,12 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn new(id: PeerId, tx: mpsc::Sender<Message>, num_pieces: usize, supports_fast: bool) -> Self {
+    pub fn new(
+        id: PeerId,
+        tx: mpsc::Sender<Message>,
+        num_pieces: usize,
+        supports_fast: bool,
+    ) -> Self {
         Self {
             id,
             supports_fast,
@@ -86,21 +83,42 @@ impl Connection {
         self.uploaded_this_second < UPLOAD_LIMIT && !self.am_choking
     }
 
-    pub fn uploaded_this_second(&self) -> usize {self.uploaded_this_second}
-    pub fn downloaded_this_second(&self) -> usize {self.downloaded_this_second}
-    pub fn timeouts_this_second(&self) -> usize {self.timeouts_this_second}
-    pub fn rejects_this_second(&self) -> usize {self.rejects_this_second}
-    pub fn max_requests(&self) -> usize {self.max_requests}
-    pub fn sent_requests(&self) -> usize {self.sent_requests}
-    pub fn am_choking(&self) -> bool {self.am_choking}
-    pub fn am_interested(&self) -> bool {self.am_interested}
-    pub fn peer_choking(&self) -> bool {self.peer_choking}
-    pub fn peer_interested(&self) -> bool {self.peer_interested}
-    pub fn piece_bitfield(&self) -> &Bitfield {&self.piece_bitfield}
+    pub fn uploaded_this_second(&self) -> usize {
+        self.uploaded_this_second
+    }
+    pub fn downloaded_this_second(&self) -> usize {
+        self.downloaded_this_second
+    }
+    pub fn timeouts_this_second(&self) -> usize {
+        self.timeouts_this_second
+    }
+    pub fn rejects_this_second(&self) -> usize {
+        self.rejects_this_second
+    }
+    pub fn max_requests(&self) -> usize {
+        self.max_requests
+    }
+    pub fn sent_requests(&self) -> usize {
+        self.sent_requests
+    }
+    pub fn am_choking(&self) -> bool {
+        self.am_choking
+    }
+    pub fn am_interested(&self) -> bool {
+        self.am_interested
+    }
+    pub fn peer_choking(&self) -> bool {
+        self.peer_choking
+    }
+    pub fn peer_interested(&self) -> bool {
+        self.peer_interested
+    }
+    pub fn piece_bitfield(&self) -> &Bitfield {
+        &self.piece_bitfield
+    }
 
     pub fn boost_max_requests(&mut self) {
-        self.max_requests = (self.max_requests + MAX_REQUESTS_STEP)
-            .min(MAX_MAX_REQUESTS);
+        self.max_requests = (self.max_requests + MAX_REQUESTS_STEP).min(MAX_MAX_REQUESTS);
     }
     pub fn throttle_max_requests(&mut self) {
         self.max_requests = (self.max_requests * 3) / 4;
@@ -144,7 +162,8 @@ impl Connection {
         ensure!(
             bitfield.num_bytes() == self.piece_bitfield.num_bytes(),
             "The received bitfield should be {} bytes long, got {}",
-            self.piece_bitfield.num_bytes(), bitfield.num_bytes()
+            self.piece_bitfield.num_bytes(),
+            bitfield.num_bytes()
         );
         self.piece_bitfield.set_bytes(bitfield.as_bytes());
         Ok(())
@@ -177,11 +196,21 @@ impl Connection {
     }
 
     pub async fn request(&mut self, index: usize, begin: usize, length: usize) {
-        self.send(Message::Request { index, begin, length }).await;
+        self.send(Message::Request {
+            index,
+            begin,
+            length,
+        })
+        .await;
         self.sent_requests += 1;
     }
 
-    pub fn receive_piece(&mut self, length: usize, response_time: Option<Duration>, is_downloading: bool) {
+    pub fn receive_piece(
+        &mut self,
+        length: usize,
+        response_time: Option<Duration>,
+        is_downloading: bool,
+    ) {
         if is_downloading {
             self.sub_sent_requests(1);
         }
@@ -199,7 +228,8 @@ impl Connection {
             begin,
             piece,
             response_time: None,
-        }).await;
+        })
+        .await;
     }
 
     fn control_congestion(&mut self) {
@@ -208,8 +238,8 @@ impl Connection {
         } else {
             TIMEOUTS_THROTTLE_ALPHA
         };
-        self.timeouts_ema = alpha * self.timeouts_this_second as f64
-            + (1. - alpha) * self.timeouts_ema;
+        self.timeouts_ema =
+            alpha * self.timeouts_this_second as f64 + (1. - alpha) * self.timeouts_ema;
 
         if self.timeouts_ema >= 1. {
             if !self.peer_choking {
@@ -232,4 +262,3 @@ impl Connection {
         self.timeouts_this_second = 0;
     }
 }
-

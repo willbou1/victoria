@@ -48,6 +48,7 @@
             gdb
             rust-analyzer
             cargo
+            rustfmt
             rustc
             pkg-config
             tokio-console

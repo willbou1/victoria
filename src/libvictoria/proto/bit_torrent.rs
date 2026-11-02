@@ -1,31 +1,24 @@
-use anyhow::{Context, Result, ensure, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
     },
-    io::{AsyncWriteExt, AsyncReadExt},
-    sync::mpsc,
     select,
+    sync::mpsc,
 };
-use std::{
-    collections::{HashMap},
-    sync::Arc,
-    time::{Instant, Duration},
-};
-use tracing::{trace};
+use tracing::trace;
 
-use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
-use crate::libvictoria::{
-    bitfield::Bitfield,
-    torrent::Event,
-    types::*
-};
-use super::{
-    metadata::{MetadataMessage},
-    pex::PEXMessage,
-};
+use super::{metadata::MetadataMessage, pex::PEXMessage};
+use crate::libvictoria::{bitfield::Bitfield, torrent::Event, types::*};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -100,28 +93,39 @@ pub enum Message {
 impl Message {
     pub fn into_bytes(self) -> Vec<u8> {
         match self {
-            Self::ExtensionHandshake { extensions, client, max_requests, metadata_size } => {
+            Self::ExtensionHandshake {
+                extensions,
+                client,
+                max_requests,
+                metadata_size,
+            } => {
                 let mut root = HashMap::new();
                 if let Some(client) = client {
-                    root.insert(vec![b'b'],
-                        BencodeValue::ByteString(client.into_bytes())
-                    );
+                    root.insert(vec![b'b'], BencodeValue::ByteString(client.into_bytes()));
                 }
                 if let Some(max_requests) = max_requests {
-                    root.insert(Vec::from(b"reqq"),
-                        BencodeValue::Integer(max_requests as i64)
+                    root.insert(
+                        Vec::from(b"reqq"),
+                        BencodeValue::Integer(max_requests as i64),
                     );
                 }
                 if let Some(metadata_size) = metadata_size {
-                    root.insert(Vec::from(b"metadata_size"),
-                        BencodeValue::Integer(metadata_size as i64)
+                    root.insert(
+                        Vec::from(b"metadata_size"),
+                        BencodeValue::Integer(metadata_size as i64),
                     );
                 }
-                root.insert(vec![b'm'], BencodeValue::Dictionary(
-                    extensions.iter()
-                        .map(|(name, id)| (name.as_bytes().to_vec(), BencodeValue::Integer(*id as i64)))
-                        .collect()
-                ));
+                root.insert(
+                    vec![b'm'],
+                    BencodeValue::Dictionary(
+                        extensions
+                            .iter()
+                            .map(|(name, id)| {
+                                (name.as_bytes().to_vec(), BencodeValue::Integer(*id as i64))
+                            })
+                            .collect(),
+                    ),
+                );
                 BencodeValue::Dictionary(root).to_bytes()
             }
             _ => Vec::new(),
@@ -134,14 +138,19 @@ impl Message {
             let root = BencodeAccessor::new(&root_val);
 
             Ok(Self::ExtensionHandshake {
-                extensions: root.required(b"m")?.map_dict(
-                    |name, id| Ok((String::from_utf8_lossy(name).to_string(), id.to_integer()?))
-                )?.into_iter().collect(),
+                extensions: root
+                    .required(b"m")?
+                    .map_dict(|name, id| {
+                        Ok((String::from_utf8_lossy(name).to_string(), id.to_integer()?))
+                    })?
+                    .into_iter()
+                    .collect(),
                 client: root.map_optional(b"v", |v| v.to_string())?,
                 max_requests: root.map_optional(b"reqq", |r| r.to_integer())?,
                 metadata_size: root.map_optional(b"metadata_size", |s| s.to_integer())?,
             })
-        }().context("while parsing extension handshake")
+        }()
+        .context("while parsing extension handshake")
     }
 }
 
@@ -164,78 +173,68 @@ impl BitTorrent {
         local_id: &PeerId,
     ) -> Result<Self> {
         // TODO Make this try all endpoints
-        match tokio::time::timeout(
-            HANDSHAKE_TIMEOUT,
-            async {
-                let mut handshake = [0u8; 68];
-                let name = format!("{peer_info}");
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            let mut handshake = [0u8; 68];
+            let name = format!("{peer_info}");
 
-                let addrs = peer_info.endpoints.resolve().await?;
+            let addrs = peer_info.endpoints.resolve().await?;
 
-                let mut stream = TcpStream::connect(
-                    addrs.iter().next().unwrap()
-                ).await?;
-                trace!(peer = %name, "Connected");
+            let mut stream = TcpStream::connect(addrs.iter().next().unwrap()).await?;
+            trace!(peer = %name, "Connected");
 
-                // Send the handshake
-                handshake[0] = 19;
-                handshake[1..20].copy_from_slice(b"BitTorrent protocol");
-                handshake[20 + 5] |= 0x10; // Advertise extensions
-                handshake[20 + 7] |= 0x04; // Advertise fast
-                handshake[20 + 7] |= 0x01; // Avertise DHT
-                handshake[28..48].copy_from_slice(info_hash.as_ref());
-                handshake[48..68].copy_from_slice(local_id.as_ref());
-                stream.write_all(&handshake).await?;
-                trace!(peer = %name, "Sent handshake");
+            // Send the handshake
+            handshake[0] = 19;
+            handshake[1..20].copy_from_slice(b"BitTorrent protocol");
+            handshake[20 + 5] |= 0x10; // Advertise extensions
+            handshake[20 + 7] |= 0x04; // Advertise fast
+            handshake[20 + 7] |= 0x01; // Avertise DHT
+            handshake[28..48].copy_from_slice(info_hash.as_ref());
+            handshake[48..68].copy_from_slice(local_id.as_ref());
+            stream.write_all(&handshake).await?;
+            trace!(peer = %name, "Sent handshake");
 
-                // Receive the handshake response and verify it is right
-                stream.read_exact(&mut handshake).await?;
+            // Receive the handshake response and verify it is right
+            stream.read_exact(&mut handshake).await?;
+            ensure!(
+                handshake[0] == 19,
+                "expected handshake response to start with 19"
+            );
+            ensure!(
+                &handshake[1..20] == b"BitTorrent protocol",
+                "expected handshake response to have 'BitTorrent protocol'"
+            );
+            ensure!(
+                &handshake[28..48] == info_hash.as_ref(),
+                "expected handshake response to have same info hash"
+            );
+            if let Some(peer_id) = peer_info.id {
                 ensure!(
-                    handshake[0] == 19,
-                    "expected handshake response to start with 19"
+                    &handshake[48..68] == peer_id.as_ref(),
+                    "expected handshake response to have right peer id"
                 );
-                ensure!(
-                    &handshake[1..20] == b"BitTorrent protocol",
-                    "expected handshake response to have 'BitTorrent protocol'"
-                );
-                ensure!(
-                    &handshake[28..48] == info_hash.as_ref(),
-                    "expected handshake response to have same info hash"
-                );
-                if let Some(peer_id) = peer_info.id {
-                    ensure!(
-                        &handshake[48..68] == peer_id.as_ref(),
-                        "expected handshake response to have right peer id"
-                    );
-                }
-                trace!(peer = %name, "Received handshake");
-
-                Ok(Self {
-                    stream,
-                    name,
-                    id: PeerId(handshake[48..68].try_into()?),
-                    supports_fast: handshake[20 + 7] & 0x04 > 0,
-                    supports_dht: handshake[20 + 7] & 0x01 > 0,
-                })
             }
-        ).await {
+            trace!(peer = %name, "Received handshake");
+
+            Ok(Self {
+                stream,
+                name,
+                id: PeerId(handshake[48..68].try_into()?),
+                supports_fast: handshake[20 + 7] & 0x04 > 0,
+                supports_dht: handshake[20 + 7] & 0x01 > 0,
+            })
+        })
+        .await
+        {
             Ok(result) => result,
             Err(_) => Err(anyhow!("Exceeded handshake timeout")),
         }
     }
 
-    pub async fn run(
-        self,
-        tx: mpsc::Sender<Event>,
-        mut rx: mpsc::Receiver<Message>,
-    ) {
+    pub async fn run(self, tx: mpsc::Sender<Event>, mut rx: mpsc::Receiver<Message>) {
         let BitTorrent {
-            stream,
-            name,
-            id,
-            ..
+            stream, name, id, ..
         } = self;
-        
+
         let request_times = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let extensions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let read_request_times = request_times.clone();
@@ -244,13 +243,20 @@ impl BitTorrent {
         let write_extensions = extensions.clone();
 
         let (mut reader, mut writer) = stream.into_split();
-        
+
         let read_tx = tx.clone();
         let read_name = name.clone();
-        
+
         let reader_task = async move {
             loop {
-                match Self::receive(&mut reader, &read_name, read_request_times.clone(), read_extensions.clone()).await {
+                match Self::receive(
+                    &mut reader,
+                    &read_name,
+                    read_request_times.clone(),
+                    read_extensions.clone(),
+                )
+                .await
+                {
                     Ok(message) => {
                         if read_tx.send(Event::Message(id, message)).await.is_err() {
                             return Ok(());
@@ -262,19 +268,26 @@ impl BitTorrent {
                 }
             }
         };
-        
+
         let writer_task = async move {
             // Send extension handshake TODO move this to torrent loop
-            Self::send(&mut writer, &name, Message::ExtensionHandshake {
-                extensions: HashMap::from_iter(vec![
-                    (String::from("ut_pex"), PEX_ID),
-                    (String::from("ut_metadata"), METADATA_ID),
-                ]),
-                client: Some(format!("victoria/{}", env!("CARGO_PKG_VERSION"))),
-                // TODO respect this for other client
-                max_requests: Some(200),
-                metadata_size: None,
-            }, write_request_times.clone(), write_extensions.clone()).await?;
+            Self::send(
+                &mut writer,
+                &name,
+                Message::ExtensionHandshake {
+                    extensions: HashMap::from_iter(vec![
+                        (String::from("ut_pex"), PEX_ID),
+                        (String::from("ut_metadata"), METADATA_ID),
+                    ]),
+                    client: Some(format!("victoria/{}", env!("CARGO_PKG_VERSION"))),
+                    // TODO respect this for other client
+                    max_requests: Some(200),
+                    metadata_size: None,
+                },
+                write_request_times.clone(),
+                write_extensions.clone(),
+            )
+            .await?;
 
             let sleep = tokio::time::sleep(Duration::from_secs(60 * 2));
             tokio::pin!(sleep);
@@ -299,10 +312,10 @@ impl BitTorrent {
                     }
                 }
             }
-            
+
             Ok::<_, anyhow::Error>(())
         };
-        
+
         select! {
             result = reader_task => {
                 if let Err(e) = result {
@@ -341,32 +354,51 @@ impl BitTorrent {
                 payload.push(4);
                 payload.extend((index as u32).to_be_bytes());
             }
-            Message::Request{ index, begin, length } => {
+            Message::Request {
+                index,
+                begin,
+                length,
+            } => {
                 payload.push(6);
                 send_index_begin(&mut payload, index, begin);
                 payload.extend((length as u32).to_be_bytes());
-                request_times.lock().await
+                request_times
+                    .lock()
+                    .await
                     .insert((index, begin, length), Instant::now());
             }
-            Message::Cancel{ index, begin, length } => {
+            Message::Cancel {
+                index,
+                begin,
+                length,
+            } => {
                 payload.push(8);
                 send_index_begin(&mut payload, index, begin);
                 payload.extend((length as u32).to_be_bytes());
             }
-            Message::Piece{ index, begin, piece, .. } => {
+            Message::Piece {
+                index,
+                begin,
+                piece,
+                ..
+            } => {
                 payload.push(7);
                 send_index_begin(&mut payload, index, begin);
                 payload.extend(piece);
             }
             Message::Choked(choked) => {
-                payload.push(if choked {0} else {1});
+                payload.push(if choked { 0 } else { 1 });
             }
             Message::Interested(interested) => {
-                payload.push(if interested {2} else {3});
+                payload.push(if interested { 2 } else { 3 });
             }
 
             // extensions
-            Message::Reject{ index, begin, length } => {
+            Message::Reject {
+                index,
+                begin,
+                length,
+            } => {
                 payload.push(16);
                 send_index_begin(&mut payload, index, begin);
                 payload.extend((length as u32).to_be_bytes());
@@ -415,13 +447,16 @@ impl BitTorrent {
 
     fn check_length(expected: usize, actual: usize, at_least: bool, op: &str) -> Result<()> {
         ensure!(
-            if at_least {actual >= expected} else {actual == expected},
+            if at_least {
+                actual >= expected
+            } else {
+                actual == expected
+            },
             "The length of a {op} payloud should be{} {expected}, got {actual}",
-            if at_least {" at least "} else {""}
+            if at_least { " at least " } else { "" }
         );
         Ok(())
     }
-
 
     async fn receive(
         reader: &mut OwnedReadHalf,
@@ -449,44 +484,61 @@ impl BitTorrent {
         let mut id_buf = [0u8; 1];
         reader.read_exact(&mut id_buf).await?;
         let msg = match id_buf[0] {
-            5 => { // bitfield
+            5 => {
+                // bitfield
                 Self::check_length(2, message_length, true, "Bitfield")?;
                 let mut bitfield = vec![0u8; message_length - 1];
                 reader.read_exact(&mut bitfield).await?;
                 Message::Bitfield(Bitfield::from_vec(bitfield))
             }
-            4 => { // have
+            4 => {
+                // have
                 Self::check_length(1 + 4, message_length, false, "Have")?;
                 reader.read_exact(&mut int_buf).await?;
                 let index = u32::from_be_bytes(int_buf) as usize;
                 Message::Have { index }
             }
-            6 => { // request
+            6 => {
+                // request
                 Self::check_length(1 + 4 * 3, message_length, false, "Request")?;
                 let (index, begin) = receive_index_begin(reader).await?;
                 reader.read_exact(&mut int_buf).await?;
                 let length = u32::from_be_bytes(int_buf) as usize;
-                Message::Request { index, begin, length }
+                Message::Request {
+                    index,
+                    begin,
+                    length,
+                }
             }
-            7 => { // piece
+            7 => {
+                // piece
                 Self::check_length(1 + 4 * 2, message_length, true, "Piece")?;
                 let (index, begin) = receive_index_begin(reader).await?;
                 let mut piece = vec![0u8; message_length - 1 - 4 - 4];
                 reader.read_exact(&mut piece).await?;
 
                 let key = (index, begin, piece.len());
-                let sent_at = request_times.lock().await
-                    .remove(&key);
+                let sent_at = request_times.lock().await.remove(&key);
                 let response_time = sent_at.map(|t| t.elapsed());
 
-                Message::Piece { index, begin, piece, response_time }
+                Message::Piece {
+                    index,
+                    begin,
+                    piece,
+                    response_time,
+                }
             }
-            8 => { // cancel
+            8 => {
+                // cancel
                 Self::check_length(1 + 4 * 3, message_length, false, "Cancel")?;
                 let (index, begin) = receive_index_begin(reader).await?;
                 reader.read_exact(&mut int_buf).await?;
                 let length = u32::from_be_bytes(int_buf) as usize;
-                Message::Cancel { index, begin, length }
+                Message::Cancel {
+                    index,
+                    begin,
+                    length,
+                }
             }
             0 => {
                 Self::check_length(1, message_length, false, "Choke")?;
@@ -505,35 +557,45 @@ impl BitTorrent {
                 Message::Interested(false)
             }
 
-            16 => { // reject
+            16 => {
+                // reject
                 Self::check_length(1 + 4 * 3, message_length, false, "Reject")?;
                 let (index, begin) = receive_index_begin(reader).await?;
                 reader.read_exact(&mut int_buf).await?;
                 let length = u32::from_be_bytes(int_buf) as usize;
-                Message::Reject { index, begin, length }
+                Message::Reject {
+                    index,
+                    begin,
+                    length,
+                }
             }
-            0x0E => { // HaveAll
+            0x0E => {
+                // HaveAll
                 Self::check_length(1, message_length, false, "HaveAll")?;
                 Message::HaveAll
             }
-            0x0F => { // HaveNone
+            0x0F => {
+                // HaveNone
                 Self::check_length(1, message_length, false, "HaveNone")?;
                 Message::HaveNone
             }
-            0x0D => { // suggest
+            0x0D => {
+                // suggest
                 Self::check_length(1 + 4, message_length, false, "suggest")?;
                 reader.read_exact(&mut int_buf).await?;
                 let index = u32::from_be_bytes(int_buf) as usize;
                 Message::Suggest { index }
             }
-            0x11 => { // allow fast
+            0x11 => {
+                // allow fast
                 Self::check_length(1 + 4, message_length, false, "AllowFast")?;
                 reader.read_exact(&mut int_buf).await?;
                 let index = u32::from_be_bytes(int_buf) as usize;
                 Message::AllowedFast { index }
             }
 
-            0x09 => { // DHTPort
+            0x09 => {
+                // DHTPort
                 Self::check_length(1 + 2, message_length, false, "DHTPort")?;
                 reader.read_exact(&mut int_buf[0..2]).await?;
                 let port = u16::from_be_bytes(int_buf[0..2].try_into().unwrap());
@@ -552,27 +614,32 @@ impl BitTorrent {
                     0 => {
                         let msg = Message::from_extension_handshake_bytes(&payload[1..])
                             .map_err(|e| anyhow!("{e}"))?;
-                        if let Message::ExtensionHandshake { extensions: new, .. } = &msg {
+                        if let Message::ExtensionHandshake {
+                            extensions: new, ..
+                        } = &msg
+                        {
                             extensions.lock().await.extend(new.clone());
                         }
                         msg
                     }
                     PEX_ID => Message::PEX(
-                        PEXMessage::from_bytes(&payload[1..])
-                            .map_err(|e| anyhow!("{e}"))?
+                        PEXMessage::from_bytes(&payload[1..]).map_err(|e| anyhow!("{e}"))?,
                     ),
                     METADATA_ID => Message::Metadata(
-                        MetadataMessage::from_bytes(&payload[1..])
-                            .map_err(|e| anyhow!("{e}"))?
+                        MetadataMessage::from_bytes(&payload[1..]).map_err(|e| anyhow!("{e}"))?,
                     ),
-                    _ => Message::UnsupportedExtension { type_byte: payload[0] },
+                    _ => Message::UnsupportedExtension {
+                        type_byte: payload[0],
+                    },
                 }
             }
 
             _ => {
                 let mut payload = vec![0u8; message_length - 1];
                 reader.read_exact(&mut payload).await?;
-                Message::Unsupported { type_byte: id_buf[0] }
+                Message::Unsupported {
+                    type_byte: id_buf[0],
+                }
             }
         };
         trace!(peer = %name, "Received {msg:?}");

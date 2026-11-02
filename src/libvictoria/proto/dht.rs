@@ -1,16 +1,14 @@
 use anyhow::{Context, Result, anyhow};
-use tracing::{trace};
+use tracing::trace;
 
-use tokio::{
-    net::UdpSocket,
-};
+use rand::{RngExt, rng};
 use std::{
     collections::HashMap,
-    net::{IpAddr, SocketAddr, Ipv6Addr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
 };
-use rand::{rng, RngExt};
+use tokio::net::UdpSocket;
 
-use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
 use crate::libvictoria::types::*;
 
@@ -30,12 +28,15 @@ impl NodeInfo {
             endpoint: Endpoint::from_compact_4(&compact[20..26])?,
         })
     }
-    
+
     pub fn from_compact_list(compact: &[u8]) -> Result<Vec<Self>> {
         if !compact.len().is_multiple_of(26) {
-            return Err(anyhow!("a list of compact nodes need to be divisible by 26"));
+            return Err(anyhow!(
+                "a list of compact nodes need to be divisible by 26"
+            ));
         }
-        Ok(compact.chunks_exact(26)
+        Ok(compact
+            .chunks_exact(26)
             .map(|c| Self::from_compact(c).unwrap())
             .collect())
     }
@@ -61,7 +62,8 @@ pub struct Message {
 
 impl Message {
     pub fn from_bytes<F>(encoded: &[u8], mut f: F) -> Result<Self>
-        where F: FnMut(&BencodeAccessor, char, &TransactionId) -> Result<MessageType>
+    where
+        F: FnMut(&BencodeAccessor, char, &TransactionId) -> Result<MessageType>,
     {
         let root_val = BencodeValue::from_bytes(encoded)?.0;
         let root = BencodeAccessor::new(&root_val);
@@ -76,12 +78,9 @@ impl Message {
 
     pub fn to_bytes(self) -> Vec<u8> {
         use BencodeValue::*;
-        let mut key_vals = HashMap::from([
-            (b"t".into(), ByteString(self.transaction_id)),
-        ]);
+        let mut key_vals = HashMap::from([(b"t".into(), ByteString(self.transaction_id))]);
         if let Some(client_version) = self.client_version {
-            key_vals.insert(b"v".into(),
-                ByteString(client_version.to_vec()));
+            key_vals.insert(b"v".into(), ByteString(client_version.to_vec()));
         }
         self.type_of.fill_bencode(&mut key_vals);
         Dictionary(key_vals).to_bytes()
@@ -111,18 +110,9 @@ impl TryFrom<u8> for ErrorCode {
 }
 
 pub enum MessageType {
-    Query {
-        id: NodeId,
-        query: Query,
-    },
-    Response {
-        id: NodeId,
-        response: Response,
-    },
-    Error {
-        code: ErrorCode,
-        message: String,
-    },
+    Query { id: NodeId, query: Query },
+    Response { id: NodeId, response: Response },
+    Error { code: ErrorCode, message: String },
 }
 
 impl MessageType {
@@ -130,7 +120,8 @@ impl MessageType {
         Ok(Self::Error {
             code: {
                 let code = error.at(0)?;
-                code.to_integer::<u8>()?.try_into()
+                code.to_integer::<u8>()?
+                    .try_into()
                     .map_err(|e| code.wrap_err(e))?
             },
             message: error.at(1)?.to_string()?,
@@ -144,15 +135,15 @@ impl MessageType {
                 id: NodeId(root.required(b"a")?.required(b"id")?.to_n_bytes()?),
                 query: Query::from_bencode(root)?,
             },
-            'r' => {
-                match (root.optional(b"r")?, root.optional(b"e")?) {
-                    (Some(response), None) => Self::Response {
-                        id: NodeId(response.required(b"id")?.to_n_bytes()?),
-                        response: Response::from_bencode(&response)?,
-                    },
-                    (None, Some(error)) => Self::from_error_bencode(error)?,
-                    _ => root.err_out(anyhow!("a response needs either a response or an error body"))?,
-                }
+            'r' => match (root.optional(b"r")?, root.optional(b"e")?) {
+                (Some(response), None) => Self::Response {
+                    id: NodeId(response.required(b"id")?.to_n_bytes()?),
+                    response: Response::from_bencode(&response)?,
+                },
+                (None, Some(error)) => Self::from_error_bencode(error)?,
+                _ => root.err_out(anyhow!(
+                    "a response needs either a response or an error body"
+                ))?,
             },
             'e' => Self::from_error_bencode(root.required(b"e")?)?,
             t => y.err_out(anyhow!("invalid message type {t} expected r, q or e"))?,
@@ -164,10 +155,13 @@ impl MessageType {
         match self {
             Self::Error { code, message } => {
                 key_vals.insert(b"y".into(), ByteString(b"e".to_vec()));
-                key_vals.insert(b"e".into(), List(vec![
-                    Integer(code as i64),
-                    ByteString(message.bytes().collect())
-                ]));
+                key_vals.insert(
+                    b"e".into(),
+                    List(vec![
+                        Integer(code as i64),
+                        ByteString(message.bytes().collect()),
+                    ]),
+                );
             }
             Self::Query { id, query } => {
                 key_vals.insert(b"y".into(), ByteString(b"q".to_vec()));
@@ -222,13 +216,11 @@ impl Query {
 
     pub fn fill_bencode(self, key_vals: &mut HashMap<Vec<u8>, BencodeValue>, id: NodeId) {
         use BencodeValue::*;
-        let mut params = HashMap::from([
-            (b"id".into(), ByteString(id.to_vec()))
-        ]);
+        let mut params = HashMap::from([(b"id".into(), ByteString(id.to_vec()))]);
         match self {
             Self::Ping => {
                 key_vals.insert(b"q".into(), ByteString(b"ping".to_vec()));
-            },
+            }
             Self::FindNode { target } => {
                 key_vals.insert(b"q".into(), ByteString(b"find_node".to_vec()));
                 params.insert(b"target".into(), ByteString(target.to_vec()));
@@ -237,11 +229,19 @@ impl Query {
                 key_vals.insert(b"q".into(), ByteString(b"get_peers".to_vec()));
                 params.insert(b"info_hash".into(), ByteString(info_hash.to_vec()));
             }
-            Self::AnnouncePeer { implied_port, info_hash, port, token } => {
+            Self::AnnouncePeer {
+                implied_port,
+                info_hash,
+                port,
+                token,
+            } => {
                 key_vals.insert(b"q".into(), ByteString(b"announce_peer".to_vec()));
                 params.insert(b"info_hash".into(), ByteString(info_hash.to_vec()));
                 params.insert(b"token".into(), ByteString(token));
-                params.insert(b"implied_port".into(), Integer(if implied_port {1} else {0}));
+                params.insert(
+                    b"implied_port".into(),
+                    Integer(if implied_port { 1 } else { 0 }),
+                );
                 params.insert(b"port".into(), Integer(port as i64));
             }
         }
@@ -259,36 +259,35 @@ pub struct Response {
 impl Response {
     pub fn from_bencode(response: &BencodeAccessor) -> Result<Self> {
         Ok(Self {
-            token: response.map_optional(b"token", |token|
-                token.to_bytes()
-            )?,
-            values: response.map_optional(b"values", |values|
-                values.map_list(|value|
-                    Ok(EndpointV4::from_compact(value.as_n_bytes()?))
-                )
-            )?,
-            nodes: response.map_optional(b"nodes", |nodes|
-                NodeInfo::from_compact_list(nodes.as_bytes()?)
-                    .map_err(|e| nodes.wrap_err(e))
-            )?,
+            token: response.map_optional(b"token", |token| token.to_bytes())?,
+            values: response.map_optional(b"values", |values| {
+                values.map_list(|value| Ok(EndpointV4::from_compact(value.as_n_bytes()?)))
+            })?,
+            nodes: response.map_optional(b"nodes", |nodes| {
+                NodeInfo::from_compact_list(nodes.as_bytes()?).map_err(|e| nodes.wrap_err(e))
+            })?,
         })
     }
 
-
     pub fn to_bencode(self, id: NodeId) -> BencodeValue {
         use BencodeValue::*;
-        let mut response = HashMap::from([
-            (b"id".into(), ByteString(id.to_vec()))
-        ]);
+        let mut response = HashMap::from([(b"id".into(), ByteString(id.to_vec()))]);
         if let Some(nodes) = self.nodes {
-            response.insert(b"nodes".into(), ByteString(
-                nodes.iter().flat_map(|n| n.to_compact()).collect()
-            ));
+            response.insert(
+                b"nodes".into(),
+                ByteString(nodes.iter().flat_map(|n| n.to_compact()).collect()),
+            );
         }
         if let Some(values) = self.values {
-            response.insert(b"values".to_vec(),  List(
-                values.iter().map(|v| ByteString(v.to_compact().into())).collect()
-            ));
+            response.insert(
+                b"values".to_vec(),
+                List(
+                    values
+                        .iter()
+                        .map(|v| ByteString(v.to_compact().into()))
+                        .collect(),
+                ),
+            );
         }
         if let Some(token) = self.token {
             response.insert(b"token".into(), ByteString(token));
@@ -309,9 +308,8 @@ impl DHT {
         Ok(Self {
             id,
             buffer: [0; _],
-            socket4: UdpSocket::bind(
-                SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), port)
-            ).await?,
+            socket4: UdpSocket::bind(SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), port))
+                .await?,
             queries: HashMap::new(),
         })
     }
@@ -319,40 +317,41 @@ impl DHT {
     pub async fn receive(&mut self) -> Result<(Endpoint, Message, Option<Query>)> {
         let (size, addr) = self.socket4.recv_from(&mut self.buffer).await?;
         let mut ret_query = None;
-        let message = Message::from_bytes(&self.buffer[..size], |root, message_type, transaction_id| {
-            match message_type {
+        let message = Message::from_bytes(
+            &self.buffer[..size],
+            |root, message_type, transaction_id| match message_type {
                 'q' => MessageType::from_bencode(root),
                 'r' | 'e' => match self.queries.remove(transaction_id) {
                     Some(query) => {
                         ret_query = Some(query.clone());
                         MessageType::from_bencode(root)
-                    }.context(format!("Associated with {query:?}")),
+                    }
+                    .context(format!("Associated with {query:?}")),
                     None => Err(anyhow!("Reply to unsolicited messag")),
-                }
-                c => Err(anyhow!("Unsupported message type  {c}"))
-            }
-        })?;
+                },
+                c => Err(anyhow!("Unsupported message type  {c}")),
+            },
+        )?;
         Ok((Endpoint::from(addr), message, ret_query))
     }
 
-    pub async fn query(
-        &mut self,
-        endpoint: &Endpoint,
-        query: Query,
-    ) -> Result<()> {
+    pub async fn query(&mut self, endpoint: &Endpoint, query: Query) -> Result<()> {
         let transaction_id: [u8; 2] = rng().random();
         self.queries.insert(transaction_id.to_vec(), query.clone());
-        self.socket4.send_to(
-            &Message {
-                transaction_id: transaction_id.to_vec(),
-                client_version: Some(CLIENT_VERSION.to_vec()),
-                type_of: MessageType::Query {
-                    id: self.id,
-                    query: query.clone(),
-                },
-            }.to_bytes(),
-            endpoint.resolve().await?,
-        ).await?;
+        self.socket4
+            .send_to(
+                &Message {
+                    transaction_id: transaction_id.to_vec(),
+                    client_version: Some(CLIENT_VERSION.to_vec()),
+                    type_of: MessageType::Query {
+                        id: self.id,
+                        query: query.clone(),
+                    },
+                }
+                .to_bytes(),
+                endpoint.resolve().await?,
+            )
+            .await?;
         Ok(())
     }
 
@@ -362,17 +361,20 @@ impl DHT {
         transaction_id: Vec<u8>,
         response: Response,
     ) -> Result<()> {
-        self.socket4.send_to(
-            &Message {
-                transaction_id,
-                client_version: Some(CLIENT_VERSION.to_vec()),
-                type_of: MessageType::Response {
-                    id: self.id,
-                    response,
-                },
-            }.to_bytes(),
-            endpoint.resolve().await?,
-        ).await?;
+        self.socket4
+            .send_to(
+                &Message {
+                    transaction_id,
+                    client_version: Some(CLIENT_VERSION.to_vec()),
+                    type_of: MessageType::Response {
+                        id: self.id,
+                        response,
+                    },
+                }
+                .to_bytes(),
+                endpoint.resolve().await?,
+            )
+            .await?;
         Ok(())
     }
 }

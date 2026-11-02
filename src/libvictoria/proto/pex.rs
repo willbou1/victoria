@@ -1,9 +1,7 @@
-use anyhow::{Result, Context};
-use std::{
-    collections::{HashSet, HashMap},
-};
+use anyhow::{Context, Result};
+use std::collections::{HashMap, HashSet};
 
-use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
 use crate::libvictoria::types::*;
 
@@ -31,34 +29,41 @@ impl PEXMessage {
                 added.extend(
                     Endpoint::from_compact_4_list(added_bytes.as_bytes()?)
                         .map_err(|e| added_bytes.wrap_err(e))?
-                        .into_iter().enumerate()
-                        .map(|(e, endpoint)| PeerInfo::new(endpoint, flags4.as_ref().map(|f| f[e])))
+                        .into_iter()
+                        .enumerate()
+                        .map(|(e, endpoint)| {
+                            PeerInfo::new(endpoint, flags4.as_ref().map(|f| f[e]))
+                        }),
                 );
             }
             if let Some(added6_bytes) = &root.optional(b"added6")? {
                 added.extend(
                     Endpoint::from_compact_6_list(added6_bytes.as_bytes()?)
                         .map_err(|e| added6_bytes.wrap_err(e))?
-                        .into_iter().enumerate()
-                        .map(|(e, endpoint)| PeerInfo::new(endpoint, flags6.as_ref().map(|f| f[e])))
+                        .into_iter()
+                        .enumerate()
+                        .map(|(e, endpoint)| {
+                            PeerInfo::new(endpoint, flags6.as_ref().map(|f| f[e]))
+                        }),
                 );
             }
 
             if let Some(dropped_bytes) = &root.optional(b"dropped")? {
                 dropped.extend(
                     Endpoint::from_compact_4_list(dropped_bytes.as_bytes()?)
-                        .map_err(|e| dropped_bytes.wrap_err(e))?
+                        .map_err(|e| dropped_bytes.wrap_err(e))?,
                 );
             }
             if let Some(dropped6_bytes) = &root.optional(b"dropped6")? {
                 dropped.extend(
                     Endpoint::from_compact_4_list(dropped6_bytes.as_bytes()?)
-                        .map_err(|e| dropped6_bytes.wrap_err(e))?
+                        .map_err(|e| dropped6_bytes.wrap_err(e))?,
                 );
             }
 
-            Ok(Self {added, dropped})
-        }().context("while parsing PEX message")
+            Ok(Self { added, dropped })
+        }()
+        .context("while parsing PEX message")
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -98,6 +103,7 @@ impl PEXMessage {
             (b"added6.f".into(), ByteString(flags6)),
             (b"dropped".into(), ByteString(dropped4)),
             (b"dropped6".into(), ByteString(dropped6)),
-        ])).to_bytes()
+        ]))
+        .to_bytes()
     }
 }

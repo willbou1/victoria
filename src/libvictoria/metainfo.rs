@@ -1,15 +1,8 @@
-use anyhow::{Result, anyhow, Context};
-use std::{
-    path::PathBuf,
-    collections::HashMap,
-    range::Range,
-};
+use anyhow::{Context, Result, anyhow};
+use std::{collections::HashMap, path::PathBuf, range::Range};
 
+use crate::libvictoria::types::*;
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
-
-use crate::libvictoria::{
-    types::*,
-};
 
 const LABEL_WIDTH: usize = 20;
 const INDENT: &str = "    ";
@@ -25,23 +18,22 @@ pub struct MetainfoFile {
 impl MetainfoFile {
     fn from_bencode(root: &BencodeAccessor, name: &str) -> Result<Vec<Self>> {
         match (root.optional(b"length")?, root.optional(b"files")?) {
-            (Some(_), Some(_)) => return Err(anyhow!("only one of 'length' or 'files' must be set")),
-            (Some(length), _) => Ok(vec![
-                MetainfoFile {
-                    path: PathBuf::from(name),
-                    length: length.to_integer()?,
-                    pieces: Default::default(),
-                }
-            ]),
-            (_, Some(files)) => Ok(
-                files.map_list(|file| Ok(Self {
-                    path: PathBuf::from(name).join(
-                        file.required(b"path")?.as_str_list()?.join("/")
-                    ),
+            (Some(_), Some(_)) => {
+                return Err(anyhow!("only one of 'length' or 'files' must be set"));
+            }
+            (Some(length), _) => Ok(vec![MetainfoFile {
+                path: PathBuf::from(name),
+                length: length.to_integer()?,
+                pieces: Default::default(),
+            }]),
+            (_, Some(files)) => Ok(files.map_list(|file| {
+                Ok(Self {
+                    path: PathBuf::from(name)
+                        .join(file.required(b"path")?.as_str_list()?.join("/")),
                     length: file.required(b"length")?.to_integer()?,
                     pieces: Default::default(),
-                }))?
-            ),
+                })
+            })?),
             _ => root.err_out(anyhow!("either 'length' or 'files' must be set"))?,
         }
     }
@@ -78,8 +70,11 @@ impl Metadata {
             let name = info.required(b"name")?.to_string()?;
             let mut files = MetainfoFile::from_bencode(&info, &name)?;
             let piece_length: usize = info.required(b"piece length")?.to_integer()?;
-            let pieces: Vec<_> = info.required(b"pieces")?.as_bytes()?
-                .chunks(20).map(|chunk| Hash(chunk.try_into().unwrap()))
+            let pieces: Vec<_> = info
+                .required(b"pieces")?
+                .as_bytes()?
+                .chunks(20)
+                .map(|chunk| Hash(chunk.try_into().unwrap()))
                 .collect();
 
             let num_pieces = pieces.len();
@@ -91,7 +86,11 @@ impl Metadata {
             for p in 0..num_pieces {
                 let mut file_offset = 0;
                 let piece_start = p * piece_length;
-                let piece_length = if p == num_pieces - 1 {last_piece_length} else {piece_length};
+                let piece_length = if p == num_pieces - 1 {
+                    last_piece_length
+                } else {
+                    piece_length
+                };
                 let piece_end = piece_start + piece_length;
                 let mut files_for_piece = Vec::new();
                 for (f, file) in files.iter().enumerate() {
@@ -114,8 +113,12 @@ impl Metadata {
                     file_offset = file_end;
                 }
 
-                for f in first_file_pieces.keys().copied()
-                    .filter(|&f| files_for_piece.iter().all(|pf| pf.file_index != f) || p == num_pieces - 1)
+                for f in first_file_pieces
+                    .keys()
+                    .copied()
+                    .filter(|&f| {
+                        files_for_piece.iter().all(|pf| pf.file_index != f) || p == num_pieces - 1
+                    })
                     .collect::<Vec<_>>()
                 {
                     if let Some(first_piece) = first_file_pieces.remove(&f) {
@@ -130,7 +133,8 @@ impl Metadata {
                 piece_length,
                 pieces,
                 files,
-                private: info.map_optional(b"private", |p| p.to_bool())?
+                private: info
+                    .map_optional(b"private", |p| p.to_bool())?
                     .unwrap_or(false),
                 value: info_val,
 
@@ -139,13 +143,14 @@ impl Metadata {
                 num_pieces,
                 piece_files,
             })
-        }().context("while parsing metadata")
+        }()
+        .context("while parsing metadata")
     }
 
-   fn to_bencode(&self) -> BencodeValue {
-       // We just use the original bencode value to ensure the hash is preserved
-       self.value.clone()
-    } 
+    fn to_bencode(&self) -> BencodeValue {
+        // We just use the original bencode value to ensure the hash is preserved
+        self.value.clone()
+    }
 
     pub fn piece_length(&self, index: usize) -> usize {
         if index == self.num_pieces - 1 {
@@ -179,16 +184,21 @@ impl Metainfo {
             let root = BencodeAccessor::new(&root_val);
             let info_bytes = root.optional(b"info")?.map(|i| i.value.to_bytes());
 
-            Ok((Metainfo {
-                announces: match root.optional(b"announce-list")? {
-                    Some(announce_list) => announce_list
-                        .map_list(|tier| tier.to_string_list())?,
-                    None => vec![vec![root.required(b"announce")?.to_string()?]],
+            Ok((
+                Metainfo {
+                    announces: match root.optional(b"announce-list")? {
+                        Some(announce_list) => {
+                            announce_list.map_list(|tier| tier.to_string_list())?
+                        }
+                        None => vec![vec![root.required(b"announce")?.to_string()?]],
+                    },
+                    created_by: root.map_optional(b"created by", |c| c.to_string())?,
+                    comment: root.map_optional(b"comment", |c| c.to_string())?,
                 },
-                created_by: root.map_optional(b"created by", |c| c.to_string())?,
-                comment: root.map_optional(b"comment", |c| c.to_string())?,
-            }, info_bytes))
-        }().context("while parsing metainfo")
+                info_bytes,
+            ))
+        }()
+        .context("while parsing metainfo")
     }
 
     pub fn to_bytes(&self, metadata: Option<&Metadata>) -> Vec<u8> {
@@ -196,36 +206,38 @@ impl Metainfo {
         let mut root = HashMap::new();
 
         if self.announces.len() == 1 && self.announces[0].len() == 1 {
-            root.insert(b"announce".into(),
+            root.insert(
+                b"announce".into(),
                 ByteString(self.announces[0][0].as_bytes().to_vec()),
             );
         } else {
-            root.insert(b"announce-list".into(),
+            root.insert(
+                b"announce-list".into(),
                 List(
-                    self.announces.iter()
-                        .map(|tier| List(
-                            tier.iter()
-                                .map(|url| ByteString(url.as_bytes().to_vec()))
-                                .collect(),
-                        ))
+                    self.announces
+                        .iter()
+                        .map(|tier| {
+                            List(
+                                tier.iter()
+                                    .map(|url| ByteString(url.as_bytes().to_vec()))
+                                    .collect(),
+                            )
+                        })
                         .collect(),
                 ),
             );
         }
         if let Some(created_by) = &self.created_by {
-            root.insert(b"created by".into(),
+            root.insert(
+                b"created by".into(),
                 ByteString(created_by.as_bytes().to_vec()),
             );
         }
         if let Some(comment) = &self.comment {
-            root.insert(b"comment".into(),
-                ByteString(comment.as_bytes().to_vec()),
-            );
+            root.insert(b"comment".into(), ByteString(comment.as_bytes().to_vec()));
         }
         if let Some(metadata) = metadata {
-            root.insert(b"info".into(),
-                metadata.to_bencode(),
-            );
+            root.insert(b"info".into(), metadata.to_bencode());
         }
         Dictionary(root).to_bytes()
     }

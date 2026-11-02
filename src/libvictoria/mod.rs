@@ -2,11 +2,11 @@
 #![allow(dead_code)]
 
 mod metainfo;
-mod tracker;
-mod timer;
 mod proto;
+mod timer;
+mod tracker;
 
-pub mod dht;
-pub mod types;
 pub mod bitfield;
+pub mod dht;
 pub mod torrent;
+pub mod types;

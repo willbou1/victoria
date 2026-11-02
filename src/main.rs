@@ -1,17 +1,15 @@
 // TODO remember to keep an eye on dead code once in a while
 #![allow(dead_code)]
 
-mod torrents;
-mod rows;
 mod libvictoria;
+mod rows;
+mod torrents;
 mod util;
 
 use anyhow::Result;
-use std::{
-    env,
-};
+use std::env;
 use tracing_subscriber::{
-    EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt, filter::LevelFilter,
+    EnvFilter, Layer, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
 use torrents::run_torrents;
@@ -23,8 +21,7 @@ async fn main() -> Result<()> {
 
     #[cfg(debug_assertions)]
     let _guard = {
-        let console_layer = console_subscriber::spawn()
-            .with_filter(LevelFilter::TRACE);
+        let console_layer = console_subscriber::spawn().with_filter(LevelFilter::TRACE);
 
         let json_layer = tracing_subscriber::fmt::layer()
             .json()
@@ -32,7 +29,7 @@ async fn main() -> Result<()> {
             .with_filter(
                 EnvFilter::new("trace")
                     .add_directive("hyper=warn".parse()?)
-                    .add_directive("reqwest=warn".parse()?)
+                    .add_directive("reqwest=warn".parse()?),
             );
 
         tracing_subscriber::registry()
@@ -43,19 +40,18 @@ async fn main() -> Result<()> {
         guard
     };
 
-    #[cfg(not(debug_assertions))] {
+    #[cfg(not(debug_assertions))]
+    {
         let json_layer = tracing_subscriber::fmt::layer()
             .json()
             .with_writer(non_blocking)
             .with_filter(
                 EnvFilter::new("info")
                     .add_directive("hyper=warn".parse()?)
-                    .add_directive("reqwest=warn".parse()?)
+                    .add_directive("reqwest=warn".parse()?),
             );
 
-        tracing_subscriber::registry()
-            .with(json_layer)
-            .init();
+        tracing_subscriber::registry().with(json_layer).init();
     }
 
     let args: Vec<String> = env::args().collect();

@@ -1,13 +1,8 @@
-use sha1::{Sha1, Digest};
-use std::{
-    collections::{HashMap},
-    time::{Duration},
-};
-use tracing::{info_span, warn, debug};
+use sha1::{Digest, Sha1};
+use std::{collections::HashMap, time::Duration};
+use tracing::{debug, info_span, warn};
 
-use crate::libvictoria::{
-    bitfield::Bitfield, timer::Timer, types::*
-};
+use crate::libvictoria::{bitfield::Bitfield, timer::Timer, types::*};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 const REJECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -15,10 +10,7 @@ const REJECTION_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Clone)]
 enum BlockState {
     Unobtained,
-    Downloading {
-        peer_id: PeerId,
-        timer: Timer,
-    },
+    Downloading { peer_id: PeerId, timer: Timer },
     Downloaded(Vec<u8>),
     Written,
 }
@@ -99,7 +91,7 @@ impl Piece {
                     BlockState::Downloaded(block.to_vec())
                 } else {
                     BlockState::Unobtained
-                }
+                },
             ));
         }
         Self {
@@ -156,14 +148,17 @@ impl Piece {
     pub fn is_active(&self) -> bool {
         self.downloading_blocks > 0 || self.downloaded_blocks > 0
     }
-    
+
     pub fn obtained_blocks(&self) -> usize {
-        if self.written {self.num_blocks()} else {self.downloaded_blocks}
+        if self.written {
+            self.num_blocks()
+        } else {
+            self.downloaded_blocks
+        }
     }
 
     pub fn is_available(&self) -> bool {
-        !self.written &&
-            (self.downloading_blocks + self.downloaded_blocks) != self.blocks.len()
+        !self.written && (self.downloading_blocks + self.downloaded_blocks) != self.blocks.len()
     }
 
     pub fn is_downloading(&self) -> bool {
@@ -179,7 +174,10 @@ impl Piece {
     }
 
     pub fn has_obtrined(&self, index: usize) -> bool {
-        matches!(self.blocks[index].state, BlockState::Downloaded(_) | BlockState::Written)
+        matches!(
+            self.blocks[index].state,
+            BlockState::Downloaded(_) | BlockState::Written
+        )
     }
 
     pub fn get(&self, index: usize) -> Option<&[u8]> {
@@ -196,16 +194,14 @@ impl Piece {
 
         for (b, block) in self.blocks.iter_mut().enumerate() {
             match block.state {
-                BlockState::Unobtained => {
-                    match block.rejects.get(peer_id) {
-                        Some(timer) => {
-                            if timer.elapsed() > REJECTION_TIMEOUT {
-                                block.rejects.remove(&peer_id);
-                                return Some(b);
-                            }
+                BlockState::Unobtained => match block.rejects.get(peer_id) {
+                    Some(timer) => {
+                        if timer.elapsed() > REJECTION_TIMEOUT {
+                            block.rejects.remove(&peer_id);
+                            return Some(b);
                         }
-                        None => return Some(b),
                     }
+                    None => return Some(b),
                 },
                 _ => (),
             }
@@ -218,10 +214,7 @@ impl Piece {
             state @ BlockState::Unobtained => {
                 let mut timer = Timer::new();
                 timer.start();
-                *state = BlockState::Downloading {
-                    peer_id,
-                    timer,
-                };
+                *state = BlockState::Downloading { peer_id, timer };
                 self.downloading_blocks += 1;
             }
             _ => (),
@@ -303,7 +296,7 @@ impl Piece {
         if !self.is_downloading() {
             return;
         }
-       
+
         for block in self.blocks.iter_mut() {
             match &mut block.state {
                 BlockState::Downloading { peer_id, .. } => {
@@ -321,7 +314,7 @@ impl Piece {
         if !self.is_downloaded() {
             return None;
         }
-        
+
         let mut piece = vec![0; self.length];
         for (b, block) in self.blocks.iter().enumerate() {
             match &block.state {

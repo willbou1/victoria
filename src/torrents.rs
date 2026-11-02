@@ -1,41 +1,41 @@
 use anyhow::{Result, anyhow};
-use tokio_util::sync::CancellationToken;
-use tracing::{error};
-use std::{
-    path::PathBuf,
-    time::Duration,
-    io::{stdout, Write},
-};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::{mpsc, watch},
-    task::JoinHandle,
-    fs,
-    select,
-};
+use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 use crossterm::{
+    cursor::MoveTo,
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
+        MouseEventKind,
+    },
     execute,
-    terminal,
-    cursor::{MoveTo},
-    event::{Event, KeyCode, KeyModifiers, EnableMouseCapture, DisableMouseCapture, MouseEventKind, MouseButton, self},
     style::Stylize,
-};
-use interprocess::local_socket::{
-    tokio::prelude::*,
-    GenericNamespaced, ListenerOptions, ToNsName,
+    terminal,
 };
 use directories::{BaseDirs, UserDirs};
-use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+use interprocess::local_socket::{GenericNamespaced, ListenerOptions, ToNsName, tokio::prelude::*};
+use std::{
+    io::{Write, stdout},
+    path::PathBuf,
+    time::Duration,
+};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, AsyncWriteExt},
+    select,
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
+use tokio_util::sync::CancellationToken;
+use tracing::error;
 
 use super::{
     libvictoria::{
+        dht::{DHTEvent, DHTManager},
         torrent::{Torrent, control::*},
-        dht::{DHTManager, DHTEvent},
         types::*,
     },
     rows::*,
 };
-use whodatrow::{*, state::*};
+use whodatrow::{state::*, *};
 
 struct TorrentTask {
     task: JoinHandle<Result<()>>,
@@ -61,23 +61,20 @@ async fn add_torrent(
             tx: torrent.command_tx.clone(),
             task: tokio::task::Builder::new()
                 .name("torrent")
-                .spawn( async move {
-                    torrent.run().await
-                })?
+                .spawn(async move { torrent.run().await })?,
         });
     }
     Ok(())
 }
 
 pub fn prepare_terminal() -> Result<()> {
-    use std::io::IsTerminal;
     use crossterm::{
-        execute,
         cursor::Hide,
+        execute,
         terminal::{EnterAlternateScreen, SetTitle, enable_raw_mode},
     };
-    let interactive_terminal =
-        std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    use std::io::IsTerminal;
+    let interactive_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     assert!(interactive_terminal, "This program only runs in a terminal");
     execute!(
         stdout(),
@@ -92,18 +89,13 @@ pub fn prepare_terminal() -> Result<()> {
 
 pub fn restore_terminal() -> Result<()> {
     use crossterm::{
-        execute,
         cursor::Show,
+        execute,
         terminal::{LeaveAlternateScreen, disable_raw_mode},
     };
-    execute!(
-        stdout(),
-        Show,
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-    )?;
+    execute!(stdout(), Show, LeaveAlternateScreen, DisableMouseCapture,)?;
     disable_raw_mode()?;
-    Ok(()) 
+    Ok(())
 }
 
 #[derive(PartialEq, Eq)]
@@ -113,22 +105,27 @@ enum KeyState {
     FocusSection,
 }
 
-async fn send_uris_to_existing(stream: &mut LocalSocketStream, torrent_uris: &[String]) -> Result<()> {
+async fn send_uris_to_existing(
+    stream: &mut LocalSocketStream,
+    torrent_uris: &[String],
+) -> Result<()> {
     let bencode = BencodeValue::List(
-        torrent_uris.iter().map(
-            |u| BencodeValue::ByteString(u.clone().into_bytes())
-        ).collect()
+        torrent_uris
+            .iter()
+            .map(|u| BencodeValue::ByteString(u.clone().into_bytes()))
+            .collect(),
     );
-    stream.write_all(
-        &bencode.to_bytes()
-    ).await.map_err(|e| anyhow!(e))
+    stream
+        .write_all(&bencode.to_bytes())
+        .await
+        .map_err(|e| anyhow!(e))
 }
 
 fn read_uris(buf: &[u8]) -> Result<Vec<String>> {
     let mut uris = Vec::new();
     let root_val = BencodeValue::from_bytes(&buf)?.0;
     let root = BencodeAccessor::new(&root_val);
-    
+
     for uri in root.as_str_list()? {
         uris.push(uri.to_string());
     }
@@ -142,17 +139,20 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
             send_uris_to_existing(&mut stream, torrent_uris).await?;
             return Ok(());
         }
-        Err(_) => ()
+        Err(_) => (),
     }
-    let listener = ListenerOptions::new()
-        .name(name)
-        .create_tokio()?;
+    let listener = ListenerOptions::new().name(name).create_tokio()?;
 
     let (config_tx, config_rx) = watch::channel(Config {
-        data_path: BaseDirs::new().ok_or(anyhow!("Can't get base directories"))?
-            .data_dir().join("victoria").join("torrents"),
-        download_path: UserDirs::new().ok_or(anyhow!("Can't get user directories"))?
-            .download_dir().ok_or(anyhow!("Can't find download directory"))?
+        data_path: BaseDirs::new()
+            .ok_or(anyhow!("Can't get base directories"))?
+            .data_dir()
+            .join("victoria")
+            .join("torrents"),
+        download_path: UserDirs::new()
+            .ok_or(anyhow!("Can't get user directories"))?
+            .download_dir()
+            .ok_or(anyhow!("Can't find download directory"))?
             .join("victoria"),
         client_id: PeerId::random(),
     });
@@ -161,9 +161,7 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
     let dht = DHTManager::new(cancel_dht.clone()).await?;
     let dht_tx = dht.tx.clone();
     let dht_rx = dht.info_rx.clone();
-    let dht_task = tokio::task::Builder::new()
-        .name("DHT")
-        .spawn(dht.run())?;
+    let dht_task = tokio::task::Builder::new().name("DHT").spawn(dht.run())?;
 
     let mut torrent_tasks = Vec::new();
     let dir = &config_rx.borrow().data_path;
@@ -176,20 +174,19 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
                 path.file_name().unwrap().to_string_lossy().as_ref(),
                 config_rx.clone(),
                 dht_tx.clone(),
-            ).await?;
+            )
+            .await?;
 
             torrent_tasks.push(TorrentTask {
                 rx: torrent.progress_rx.clone(),
                 tx: torrent.command_tx.clone(),
                 task: tokio::task::Builder::new()
                     .name("torrent")
-                    .spawn( async move {
-                        torrent.run().await
-                    })?
+                    .spawn(async move { torrent.run().await })?,
             });
         }
     }
-    
+
     for arg in torrent_uris {
         add_torrent(&mut torrent_tasks, config_rx.clone(), dht_tx.clone(), arg).await?;
     }
@@ -414,7 +411,7 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
             }
         }
     }
-    
+
     restore_terminal()?;
 
     cancel_dht.cancel();
@@ -439,12 +436,13 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
         }
         return Err(anyhow!(
             "Errors while shutting down:\n{}",
-            errors.iter()
+            errors
+                .iter()
                 .map(|e| format!("{e:#}"))
                 .collect::<Vec<_>>()
                 .join("\n")
         ));
     }
-    
+
     Ok(())
 }

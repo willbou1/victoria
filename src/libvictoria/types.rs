@@ -1,12 +1,12 @@
 use anyhow::{Result, anyhow};
-use rand::{rng, Rng, RngExt};
+use rand::{Rng, RngExt, rng};
 use std::{
     collections::HashSet,
     fmt,
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6, Ipv6Addr}
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 
-use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
 pub type ClientVersion = Vec<u8>;
 pub const CLIENT_VERSION: &'static [u8; 4] = &[b'L', b'V', 0, 0]; // libvictoria
@@ -27,10 +27,14 @@ impl<const N: usize> Kademlia<N> {
 macro_rules! impl_id {
     ($ty:ty) => {
         impl AsRef<[u8; 20]> for $ty {
-            fn as_ref(&self) -> &[u8; 20] { &self.0 }
+            fn as_ref(&self) -> &[u8; 20] {
+                &self.0
+            }
         }
         impl From<$ty> for [u8; 20] {
-            fn from(id: $ty) -> Self { id.0 }
+            fn from(id: $ty) -> Self {
+                id.0
+            }
         }
         impl fmt::Display for $ty {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -46,7 +50,9 @@ macro_rules! impl_id {
             pub fn kademlia(&self, other: &impl AsRef<[u8; 20]>) -> Kademlia<20> {
                 Kademlia(std::array::from_fn(|i| self.0[i] ^ other.as_ref()[i]))
             }
-            pub fn to_vec(&self) -> Vec<u8> { self.0.to_vec() }
+            pub fn to_vec(&self) -> Vec<u8> {
+                self.0.to_vec()
+            }
         }
     };
 }
@@ -56,16 +62,18 @@ pub struct Hash(pub [u8; 20]);
 impl Hash {
     pub fn from_xt(xt: &str) -> Result<Self> {
         let bytes: [u8; 20] = hex::decode(
-            xt.strip_prefix("urn:btih:").ok_or(
-                anyhow!("Only the btih format is supported for xt")
-            )?
-        )?.try_into().map_err(|_| anyhow!("Btih format requires 20 bytes"))?;
+            xt.strip_prefix("urn:btih:")
+                .ok_or(anyhow!("Only the btih format is supported for xt"))?,
+        )?
+        .try_into()
+        .map_err(|_| anyhow!("Btih format requires 20 bytes"))?;
         Ok(Self(bytes))
     }
 
     pub fn encode(&self) -> String {
         self.0
-            .iter() .map(|b| format!("%{b:02X}"))
+            .iter()
+            .map(|b| format!("%{b:02X}"))
             .collect::<String>()
     }
 }
@@ -91,7 +99,8 @@ impl PeerId {
 
     pub fn encode(&self) -> String {
         self.0
-            .iter() .map(|b| format!("%{b:02X}"))
+            .iter()
+            .map(|b| format!("%{b:02X}"))
             .collect::<String>()
     }
 }
@@ -100,7 +109,9 @@ impl_id!(PeerId);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub [u8; 20]);
 impl NodeId {
-    pub fn random() -> Self { Self(rng().random()) }
+    pub fn random() -> Self {
+        Self(rng().random())
+    }
 
     pub fn random_with_prefix_length(&self, prefix_length: u8) -> Self {
         let mut bytes = self.0;
@@ -111,8 +122,7 @@ impl NodeId {
             bytes[first] ^= mask;
             let random = rng().random::<u8>();
             let suffix_mask = mask - 1;
-            bytes[first] = (bytes[first] & !suffix_mask)
-                | (random & suffix_mask);
+            bytes[first] = (bytes[first] & !suffix_mask) | (random & suffix_mask);
             rng().fill_bytes(&mut bytes[first + 1..]);
         }
         Self(bytes)
@@ -124,9 +134,11 @@ impl_id!(NodeId);
 pub struct EndpointV4(pub SocketAddrV4);
 impl EndpointV4 {
     pub fn from_str(s: &str, port: u16) -> Option<Self> {
-        s.parse::<Ipv4Addr>().ok().map(|ip| Self(SocketAddrV4::new(ip, port)))
+        s.parse::<Ipv4Addr>()
+            .ok()
+            .map(|ip| Self(SocketAddrV4::new(ip, port)))
     }
-    
+
     pub fn from_compact(compact: &[u8; 6]) -> Self {
         Self(SocketAddrV4::new(
             Ipv4Addr::from_octets(compact[..4].try_into().unwrap()),
@@ -138,9 +150,10 @@ impl EndpointV4 {
         if !compact.len().is_multiple_of(6) {
             return Err(anyhow!("A compact list of IpV4 needs to be divisible by 6"));
         }
-        Ok(compact.chunks_exact(6)
-                .map(|c| EndpointV4::from_compact(c.try_into().unwrap()))
-                .collect())
+        Ok(compact
+            .chunks_exact(6)
+            .map(|c| EndpointV4::from_compact(c.try_into().unwrap()))
+            .collect())
     }
 
     pub fn to_compact(&self) -> [u8; 6] {
@@ -160,7 +173,9 @@ impl fmt::Display for EndpointV4 {
 pub struct EndpointV6(pub SocketAddrV6);
 impl EndpointV6 {
     pub fn from_str(s: &str, port: u16) -> Option<Self> {
-        s.parse::<Ipv6Addr>().ok().map(|ip| Self(SocketAddrV6::new(ip, port, 0, 0)))
+        s.parse::<Ipv6Addr>()
+            .ok()
+            .map(|ip| Self(SocketAddrV6::new(ip, port, 0, 0)))
     }
 
     pub fn from_compact(compact: &[u8; 18]) -> Self {
@@ -171,11 +186,14 @@ impl EndpointV6 {
 
     pub fn from_compact_list(compact: &[u8]) -> Result<Vec<Self>> {
         if !compact.len().is_multiple_of(18) {
-            return Err(anyhow!("A compact list of IpV6 needs to be divisible by 18"));
+            return Err(anyhow!(
+                "A compact list of IpV6 needs to be divisible by 18"
+            ));
         }
-        Ok(compact.chunks_exact(18)
-                .map(|c| EndpointV6::from_compact(c.try_into().unwrap()))
-                .collect())
+        Ok(compact
+            .chunks_exact(18)
+            .map(|c| EndpointV6::from_compact(c.try_into().unwrap()))
+            .collect())
     }
 
     pub fn to_compact(&self) -> [u8; 18] {
@@ -195,10 +213,7 @@ impl fmt::Display for EndpointV6 {
 pub enum Endpoint {
     V4(EndpointV4),
     V6(EndpointV6),
-    Hostname {
-        host: String,
-        port: u16,
-    },
+    Hostname { host: String, port: u16 },
 }
 
 impl From<std::net::SocketAddr> for Endpoint {
@@ -226,26 +241,32 @@ impl Endpoint {
 
     pub fn from_compact_4(compact: &[u8]) -> Result<Self> {
         Ok(Self::V4(EndpointV4::from_compact(
-            compact.try_into().map_err(|_| anyhow!("A compact IpV4 needs to be 6 bytes long"))?
+            compact
+                .try_into()
+                .map_err(|_| anyhow!("A compact IpV4 needs to be 6 bytes long"))?,
         )))
     }
 
     pub fn from_compact_6(compact: &[u8]) -> Result<Self> {
         Ok(Self::V6(EndpointV6::from_compact(
-            compact.try_into().map_err(|_| anyhow!("A compact IpV6 needs to be 6 bytes long"))?
+            compact
+                .try_into()
+                .map_err(|_| anyhow!("A compact IpV6 needs to be 6 bytes long"))?,
         )))
     }
 
     pub fn from_compact_4_list(compact: &[u8]) -> Result<Vec<Self>> {
-        Ok(EndpointV4::from_compact_list(compact)?.into_iter()
-                .map(|v4| Self::V4(v4))
-                .collect())
+        Ok(EndpointV4::from_compact_list(compact)?
+            .into_iter()
+            .map(|v4| Self::V4(v4))
+            .collect())
     }
 
     pub fn from_compact_6_list(compact: &[u8]) -> Result<Vec<Self>> {
-        Ok(EndpointV6::from_compact_list(compact)?.into_iter()
-                .map(|v6| Self::V6(v6))
-                .collect())
+        Ok(EndpointV6::from_compact_list(compact)?
+            .into_iter()
+            .map(|v6| Self::V6(v6))
+            .collect())
     }
 
     pub fn set_port(&mut self, new_port: u16) {
@@ -260,9 +281,10 @@ impl Endpoint {
         Ok(match self {
             Endpoint::V4(v4) => SocketAddr::V4(v4.0),
             Endpoint::V6(v6) => SocketAddr::V6(v6.0),
-            Endpoint::Hostname { host, port } =>
-                tokio::net::lookup_host((host.as_str(), *port)).await?
-                    .next().ok_or(anyhow!("Failed to resolve hostname {host}"))?
+            Endpoint::Hostname { host, port } => tokio::net::lookup_host((host.as_str(), *port))
+                .await?
+                .next()
+                .ok_or(anyhow!("Failed to resolve hostname {host}"))?,
         })
     }
 }
@@ -281,7 +303,7 @@ impl fmt::Display for Endpoint {
 pub struct EndpointSet(HashSet<Endpoint>);
 impl EndpointSet {
     pub fn intersects(&self, other: &Self) -> bool {
-         !self.0.is_disjoint(&other.0)
+        !self.0.is_disjoint(&other.0)
     }
 
     pub fn merge(&mut self, other: Self) {
@@ -333,13 +355,15 @@ pub struct PeerInfo {
 
 impl fmt::Display for PeerInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({}{}{}{}{})",
+        write!(
+            f,
+            "{} ({}{}{}{}{})",
             self.endpoints,
-            if self.prefers_encryption() {"E"} else {""},
-            if self.upload_only() {"S"} else {""},
-            if self.supports_utp() {"U"} else {""},
-            if self.supports_holepunch() {"H"} else {""},
-            if self.is_reachable() {"R"} else {""},
+            if self.prefers_encryption() { "E" } else { "" },
+            if self.upload_only() { "S" } else { "" },
+            if self.supports_utp() { "U" } else { "" },
+            if self.supports_holepunch() { "H" } else { "" },
+            if self.is_reachable() { "R" } else { "" },
         )
     }
 }
@@ -385,16 +409,16 @@ impl PeerInfo {
     }
 
     pub fn from_tracker_bencode_list(list: &BencodeAccessor) -> Result<Vec<Self>> {
-        Ok(list.map_list(|peer| Ok(Self {
-            id: Some(PeerId(peer.required(b"peer id")?.to_n_bytes()?)),
-            flags: Self::DEFAULT_FLAGS,
-            endpoints: EndpointSet::from(
-                Endpoint::from_str(
+        Ok(list.map_list(|peer| {
+            Ok(Self {
+                id: Some(PeerId(peer.required(b"peer id")?.to_n_bytes()?)),
+                flags: Self::DEFAULT_FLAGS,
+                endpoints: EndpointSet::from(Endpoint::from_str(
                     peer.required(b"ip")?.as_str()?,
                     peer.required(b"port")?.to_integer()?,
-                )
-            ),
-        }))?)
+                )),
+            })
+        })?)
     }
 
     pub fn from_tracker_bencode(root: &BencodeAccessor) -> Result<Vec<Self>> {
@@ -402,19 +426,19 @@ impl PeerInfo {
         let peers = root.required(b"peers")?;
         let mut infos = match peers.value {
             List(_) => Self::from_tracker_bencode_list(&peers),
-            ByteString(peers) => {
-                Ok(Endpoint::from_compact_4_list(peers)?.into_iter()
-                    .map(Self::from).collect())
-            }
+            ByteString(peers) => Ok(Endpoint::from_compact_4_list(peers)?
+                .into_iter()
+                .map(Self::from)
+                .collect()),
             _ => Err(anyhow!("'peers' must be either a list or a byte string")),
         }?;
         if let Some(peers6) = root.optional(b"peers6")? {
             infos.extend(match peers6.value {
                 List(_) => Self::from_tracker_bencode_list(&peers6),
-                ByteString(peers) => {
-                    Ok(Endpoint::from_compact_6(peers).into_iter()
-                        .map(Self::from).collect())
-                }
+                ByteString(peers) => Ok(Endpoint::from_compact_6(peers)
+                    .into_iter()
+                    .map(Self::from)
+                    .collect()),
                 _ => Err(anyhow!("'peers6' must be either a list or a byte string")),
             }?);
         }
@@ -422,8 +446,10 @@ impl PeerInfo {
     }
 
     pub fn from_compact_4_list(compact: &[u8]) -> Result<Vec<Self>> {
-        Ok(Endpoint::from_compact_4_list(compact)?.into_iter()
-                .map(Self::from).collect())
+        Ok(Endpoint::from_compact_4_list(compact)?
+            .into_iter()
+            .map(Self::from)
+            .collect())
     }
 }
 

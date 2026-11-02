@@ -59,7 +59,7 @@ impl Bitfield {
 
     pub fn fill(&mut self, val: bool) {
         for byte in self.buffer.iter_mut() {
-            *byte = if val {0xFF} else {0};
+            *byte = if val { 0xFF } else { 0 };
         }
         self.num_set = self.size;
     }
@@ -119,19 +119,18 @@ impl fmt::Display for Bitfield {
         for c in 0..chunks {
             let start = c * len / chunks;
             let end = ((c + 1) * len + chunks - 1) / chunks;
-            
+
             let filled = if f.alternate() {
                 // Filling a chunk when only one bit is set can looks ridiculous so we compromise
-                (start..end).filter(|i| self.is_set(*i)).count()
-                    * 4 > end - start
+                (start..end).filter(|i| self.is_set(*i)).count() * 4 > end - start
             } else {
                 (start..end).all(|i| self.is_set(i))
             };
-            
+
             if filled {
                 bits |= 1 << BRAILLE_BITS[c % 8];
             }
-            
+
             if c % 8 == 7 {
                 if self.len() == 0 {
                     bits = 0;
@@ -143,4 +142,3 @@ impl fmt::Display for Bitfield {
         Ok(())
     }
 }
-

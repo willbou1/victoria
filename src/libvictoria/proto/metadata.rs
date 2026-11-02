@@ -1,11 +1,9 @@
-use anyhow::{Result, Context};
-use std::{
-    collections::HashMap,
-};
+use anyhow::{Context, Result};
+use std::collections::HashMap;
 
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
-// BEP 9: https://www.bittorrent.org/beps/bep_0009.html 
+// BEP 9: https://www.bittorrent.org/beps/bep_0009.html
 
 #[derive(Debug)]
 pub enum MetadataMessage {
@@ -45,33 +43,37 @@ impl MetadataMessage {
                 },
                 type_byte => Self::Unsupported { type_byte },
             })
-        }().context("while parsing metadata message")
+        }()
+        .context("while parsing metadata message")
     }
 
     pub fn into_bytes(self) -> Vec<u8> {
         use BencodeValue::*;
         match self {
-            Self::Request { index } => {
-                Dictionary(HashMap::from([
-                    (Vec::from(b"msg_type"), Integer(0)),
-                    (Vec::from(b"piece"), Integer(index as i64)),
-                ])).to_bytes()
-            }
-            Self::Data { index, total_size, piece } => {
+            Self::Request { index } => Dictionary(HashMap::from([
+                (Vec::from(b"msg_type"), Integer(0)),
+                (Vec::from(b"piece"), Integer(index as i64)),
+            ]))
+            .to_bytes(),
+            Self::Data {
+                index,
+                total_size,
+                piece,
+            } => {
                 let mut ret = Dictionary(HashMap::from([
                     (Vec::from(b"msg_type"), Integer(1)),
                     (Vec::from(b"piece"), Integer(index as i64)),
                     (Vec::from(b"total_size"), Integer(total_size as i64)),
-                ])).to_bytes();
+                ]))
+                .to_bytes();
                 ret.extend(piece);
                 ret
             }
-            Self::Reject { index } => {
-                Dictionary(HashMap::from([
-                    (Vec::from(b"msg_type"), Integer(2)),
-                    (Vec::from(b"piece"), Integer(index as i64)),
-                ])).to_bytes()
-            }
+            Self::Reject { index } => Dictionary(HashMap::from([
+                (Vec::from(b"msg_type"), Integer(2)),
+                (Vec::from(b"piece"), Integer(index as i64)),
+            ]))
+            .to_bytes(),
             _ => Vec::new(),
         }
     }

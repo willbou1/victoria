@@ -1,24 +1,28 @@
 use anyhow::Result;
+use bencodedit::{BencodeError, BencodeErrorKind};
 use rand::{RngExt, seq::SliceRandom};
-use tokio::{
-    select, sync::{mpsc, watch}
-};
-use tokio_util::sync::CancellationToken;
-use tracing::{Instrument, info_span, debug};
 use std::{
     array,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
-    collections::{HashSet, HashMap},
 };
-use bencodedit::{BencodeError, BencodeErrorKind};
+use tokio::{
+    select,
+    sync::{mpsc, watch},
+};
+use tokio_util::sync::CancellationToken;
+use tracing::{Instrument, debug, info_span};
 
 use super::{
     proto::dht::*,
-    torrent::{Event, control::{DHTInfo, DHTNodeInfo}},
+    torrent::{
+        Event,
+        control::{DHTInfo, DHTNodeInfo},
+    },
     types::*,
 };
 
-const MAX_NUM_NODES_PER_BUCKET: usize = 8; 
+const MAX_NUM_NODES_PER_BUCKET: usize = 8;
 const GOOD_INTERVAL: Duration = Duration::from_mins(1);
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -121,18 +125,26 @@ impl RoutingTable {
         if prefix_length == 160 {
             return None;
         }
-        self.buckets[prefix_length as usize].add_node(info).then_some(prefix_length)
+        self.buckets[prefix_length as usize]
+            .add_node(info)
+            .then_some(prefix_length)
     }
 
     pub fn get_maintainable(&self, num: usize) -> Vec<u8> {
-        let maintainable: Vec<_> = self.buckets.iter().enumerate()
+        let maintainable: Vec<_> = self
+            .buckets
+            .iter()
+            .enumerate()
             .filter(|(_, b)| b.is_maintainable())
             .map(|(b, _)| b as u8)
             .collect();
         let mut scored: Vec<_> = maintainable
             .into_iter()
             .map(|m| {
-                (m, (8 - self.buckets[m as usize].len()) + rand::rng().random_range(0..16))
+                (
+                    m,
+                    (8 - self.buckets[m as usize].len()) + rand::rng().random_range(0..16),
+                )
             })
             .collect();
         scored.sort_unstable_by_key(|&(_, score)| score);
@@ -141,20 +153,20 @@ impl RoutingTable {
 
     pub fn get_closest_node(&self, id: &impl AsRef<[u8; 20]>) -> Option<&Node> {
         self.buckets
-            .iter().flat_map(|b| b.nodes.values())
+            .iter()
+            .flat_map(|b| b.nodes.values())
             .min_by_key(|n| n.info.id.kademlia(id))
     }
 
     pub fn get_closest_nodes(&self, id: &impl AsRef<[u8; 20]>, num: usize) -> Vec<&Node> {
-        let mut nodes: Vec<_> = self.buckets
-            .iter().flat_map(|b| b.nodes.values())
-            .collect();
+        let mut nodes: Vec<_> = self.buckets.iter().flat_map(|b| b.nodes.values()).collect();
         nodes.sort_unstable_by_key(|n| n.info.id.kademlia(id));
         nodes.into_iter().take(num).collect()
     }
 
     pub fn refresh_node(&mut self, node_id: &NodeId) {
-        self.get_bucket_mut(node_id).map(|b| b.refresh_node(node_id));
+        self.get_bucket_mut(node_id)
+            .map(|b| b.refresh_node(node_id));
     }
 
     pub fn fail_node(&mut self, node_id: &NodeId) {
@@ -211,7 +223,7 @@ impl DHTManager {
             info_tx,
             info_rx,
             cancellation_token,
-            
+
             info_hashes: HashMap::new(),
             discovered_ids: HashMap::new(),
         })
@@ -264,9 +276,10 @@ impl DHTManager {
             debug!("Performing maintenance for {target} of {}", self.id);
             self.discovered_ids.remove(&target);
             for node in self.routing_table.get_closest_nodes(&target, 8) {
-                let _ = self.dht.query(&node.info.endpoint, Query::FindNode {
-                    target,
-                }).await;
+                let _ = self
+                    .dht
+                    .query(&node.info.endpoint, Query::FindNode { target })
+                    .await;
             }
         }
         Ok(())
@@ -276,10 +289,10 @@ impl DHTManager {
         &mut self,
         endpoint: Endpoint,
         message: Message,
-        query: Option<Query>
+        query: Option<Query>,
     ) -> Result<()> {
         match message.type_of {
-            MessageType::Response {response, id} => {
+            MessageType::Response { response, id } => {
                 self.routing_table.refresh_node(&id);
                 match query.unwrap() {
                     Query::FindNode { target } => {
@@ -310,7 +323,9 @@ impl DHTManager {
     fn add_node(&mut self, info: NodeInfo) {
         if let Some(prefix_length) = self.routing_table.add_node(&info) {
             self.info_tx.send_modify(|info| {
-                info.buckets[prefix_length as usize].nodes.push(DHTNodeInfo {});
+                info.buckets[prefix_length as usize]
+                    .nodes
+                    .push(DHTNodeInfo {});
             });
         }
     }
@@ -328,9 +343,14 @@ impl DHTManager {
             return Ok(());
         }
 
-        self.add_node(NodeInfo {id, endpoint});
+        self.add_node(NodeInfo { id, endpoint });
         for info in nodes {
-            if !self.discovered_ids.entry(target).or_default().contains(&info.id) {
+            if !self
+                .discovered_ids
+                .entry(target)
+                .or_default()
+                .contains(&info.id)
+            {
                 self.discovered_ids.entry(target).and_modify(|t| {
                     t.insert(info.id);
                 });
@@ -340,9 +360,10 @@ impl DHTManager {
                     continue;
                 }
                 if other_kademlia < kademlia {
-                    let _ = self.dht.query(&info.endpoint, Query::FindNode {
-                        target,
-                    }).await;
+                    let _ = self
+                        .dht
+                        .query(&info.endpoint, Query::FindNode { target })
+                        .await;
                 }
             }
         }
@@ -356,7 +377,7 @@ impl DHTManager {
         endpoint: Endpoint,
         nodes: Vec<NodeInfo>,
     ) -> Result<()> {
-        self.add_node(NodeInfo {id, endpoint});
+        self.add_node(NodeInfo { id, endpoint });
 
         let kademlia = id.kademlia(&info_hash);
         let prefix_length = kademlia.prefix_length();
@@ -364,19 +385,29 @@ impl DHTManager {
             return Ok(());
         }
 
-        self.info_hashes.get_mut(&info_hash).map(|l| l.visited_ids.insert(id));
+        self.info_hashes
+            .get_mut(&info_hash)
+            .map(|l| l.visited_ids.insert(id));
         for info in nodes {
-            if !self.info_hashes.get(&info_hash).map(|l| l.visited_ids.contains(&info.id)).unwrap_or(true) {
-                self.info_hashes.get_mut(&info_hash).map(|l| l.visited_ids.insert(info.id));
+            if !self
+                .info_hashes
+                .get(&info_hash)
+                .map(|l| l.visited_ids.contains(&info.id))
+                .unwrap_or(true)
+            {
+                self.info_hashes
+                    .get_mut(&info_hash)
+                    .map(|l| l.visited_ids.insert(info.id));
                 let other_kademlia = info.id.kademlia(&info_hash);
                 let other_prefix_length = other_kademlia.prefix_length();
                 if other_prefix_length == 160 {
                     continue;
                 }
                 if other_kademlia < kademlia {
-                    let _ = self.dht.query(&info.endpoint, Query::GetPeers {
-                        info_hash
-                    }).await;
+                    let _ = self
+                        .dht
+                        .query(&info.endpoint, Query::GetPeers { info_hash })
+                        .await;
                 }
             }
         }
@@ -386,19 +417,22 @@ impl DHTManager {
     async fn handle_event(&mut self, event: DHTEvent) -> Result<()> {
         use DHTEvent::*;
         match event {
-            FoundNode(endpoint)  => {
+            FoundNode(endpoint) => {
                 debug!("Received DHT node {endpoint}");
-                let _ = self.dht.query(&endpoint, Query::FindNode {
-                    target: self.id
-                }).await;
+                let _ = self
+                    .dht
+                    .query(&endpoint, Query::FindNode { target: self.id })
+                    .await;
             }
             InfoHashRequest(info_hash, tx) => {
                 debug!("Received info hash request {info_hash}");
-                self.info_hashes.insert(info_hash, InfoHashKnowledge::new(tx));
+                self.info_hashes
+                    .insert(info_hash, InfoHashKnowledge::new(tx));
                 for node in self.routing_table.get_closest_nodes(&info_hash, 8) {
-                    let _ = self.dht.query(&node.info.endpoint, Query::GetPeers {
-                        info_hash
-                    }).await;
+                    let _ = self
+                        .dht
+                        .query(&node.info.endpoint, Query::GetPeers { info_hash })
+                        .await;
                 }
             }
             _ => (),

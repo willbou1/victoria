@@ -25,12 +25,27 @@ pub fn pretty_duration(duration: Duration) -> String {
     let minutes = secs / 60;
     secs %= 60;
 
-    format!("{}{}{}{}",
-        if days > 0 {format!("{days}d ")} else {String::new()},
-        if hours > 0 {format!("{hours}h ")} else {String::new()},
-        if minutes > 0 {format!("{minutes}m ")} else {String::new()},
+    format!(
+        "{}{}{}{}",
+        if days > 0 {
+            format!("{days}d ")
+        } else {
+            String::new()
+        },
+        if hours > 0 {
+            format!("{hours}h ")
+        } else {
+            String::new()
+        },
+        if minutes > 0 {
+            format!("{minutes}m ")
+        } else {
+            String::new()
+        },
         if secs > 0 && days == 0 && hours == 0 && minutes == 0 {
-            format!("{secs}s")} else {String::new()
+            format!("{secs}s")
+        } else {
+            String::new()
         },
     )
 }

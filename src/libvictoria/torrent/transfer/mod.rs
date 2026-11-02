@@ -2,30 +2,23 @@ mod connection;
 mod piece_cache;
 
 use anyhow::{Result, ensure};
+use rand::{rng, seq::IndexedRandom};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    io::SeekFrom,
+};
 use tokio::{
     fs::{self, File},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc, watch},
 };
-use std::{
-    collections::{HashMap, VecDeque, HashSet},
-    io::SeekFrom,
-};
-use rand::{rng, seq::IndexedRandom};
-use tracing::{info_span, info, debug, trace};
+use tracing::{debug, info, info_span, trace};
 
 use crate::libvictoria::{
     bitfield::Bitfield,
     metainfo::Metadata,
-    proto::{
-        bit_torrent::Message,
-        tracker,
-    },
-    torrent::{
-        PieceProgress,
-        piece::Piece,
-        control::*
-    },
+    proto::{bit_torrent::Message, tracker},
+    torrent::{PieceProgress, control::*, piece::Piece},
     types::*,
 };
 use connection::Connection;
@@ -48,14 +41,16 @@ pub struct Transfer {
 
 impl Transfer {
     const PIEC_CACHE_CAPACITY: usize = 8;
-    const PRIORITIES: [FilePriority; 10] = {use FilePriority::*; [
-        Low,
-        Normal, Normal,
-        Medium, Medium, Medium,
-        High, High, High, High,
-    ]};
+    const PRIORITIES: [FilePriority; 10] = {
+        use FilePriority::*;
+        [
+            Low, Normal, Normal, Medium, Medium, Medium, High, High, High, High,
+        ]
+    };
     const BLOCK_SIZE: usize = 16 * 1024;
-    fn block_index(begin: usize) -> usize {begin / Self::BLOCK_SIZE}
+    fn block_index(begin: usize) -> usize {
+        begin / Self::BLOCK_SIZE
+    }
 
     pub async fn new(
         metadata: Metadata,
@@ -71,14 +66,17 @@ impl Transfer {
             let path = base_path.join(&file.path);
             fs::create_dir_all(&path.parent().unwrap()).await?;
             let torrent_file = fs::OpenOptions::new()
-                .read(true).write(true).create(true)
-                .open(&path).await?;
+                .read(true)
+                .write(true)
+                .create(true)
+                .open(&path)
+                .await?;
             torrent_file.set_len(file.length as u64).await?;
             files.push(torrent_file);
         }
 
-        let (pieces, piece_bitfield)
-            = Self::load_state(&metadata, &info_hash, &config_rx, &mut files).await?;
+        let (pieces, piece_bitfield) =
+            Self::load_state(&metadata, &info_hash, &config_rx, &mut files).await?;
         let downloaded = (piece_bitfield.num_set() * metadata.piece_length).min(metadata.length);
         let left = metadata.length - downloaded;
         let _ = tracker_tx.send(tracker::Progress {
@@ -88,18 +86,22 @@ impl Transfer {
             uploaded: 0,
         });
 
-        progress_tx.send_modify(|p| p.transfer = Some(
-            TransferProgress::new(&metadata, piece_bitfield.clone(),
-                pieces.iter().enumerate()
+        progress_tx.send_modify(|p| {
+            p.transfer = Some(TransferProgress::new(
+                &metadata,
+                piece_bitfield.clone(),
+                pieces
+                    .iter()
+                    .enumerate()
                     .filter(|(_, p)| p.is_active())
                     .map(|(p, piece)| PieceProgress {
                         index: p,
                         block_bitfield: piece.to_bitfield(),
                         num_verification_failures: piece.num_verification_failures(),
                     })
-                    .collect()
-            )
-        ));
+                    .collect(),
+            ))
+        });
 
         Ok(Self {
             info_hash,
@@ -119,14 +121,19 @@ impl Transfer {
 
     pub async fn save_state(&self) -> Result<()> {
         info!("Saving");
-        let path = self.config_rx.borrow().data_path
-            .join(self.info_hash.to_string()).join("state");
+        let path = self
+            .config_rx
+            .borrow()
+            .data_path
+            .join(self.info_hash.to_string())
+            .join("state");
         fs::create_dir_all(&path.parent().unwrap()).await?;
         let mut file = fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(&path).await?;
+            .open(&path)
+            .await?;
         file.write_all(self.piece_bitfield.as_bytes()).await?;
         for (p, piece) in self.pieces.iter().filter(|p| p.is_active()).enumerate() {
             file.write_u64_le(p as u64).await?;
@@ -148,7 +155,8 @@ impl Transfer {
         } else if self.piece_bitfield.num_set() == self.metadata.num_pieces && supports_fast {
             con.send(Message::HaveAll).await;
         } else if self.piece_bitfield.num_set() != 0 {
-            con.send(Message::Bitfield(self.piece_bitfield.clone())).await;
+            con.send(Message::Bitfield(self.piece_bitfield.clone()))
+                .await;
         }
         con.set_am_interested(true).await;
         self.connections.insert(peer_id, con);
@@ -167,18 +175,20 @@ impl Transfer {
             piece.reset(&peer_id);
         }
         self.progress_tx.send_modify(|p| {
-            p.peers.entry(*peer_id).and_modify(
-                |peer| peer.connection = None
-            );
+            p.peers
+                .entry(*peer_id)
+                .and_modify(|peer| peer.connection = None);
         });
         self.connections.remove(peer_id);
     }
-    
+
     pub async fn tick(&mut self) -> Result<()> {
         self.check_request_accounting("Before timeouts");
         for piece in self.pieces.iter_mut() {
             for (peer_id, count) in piece.check_timeout() {
-                self.connections.entry(peer_id).and_modify(|c| c.timeout(count));
+                self.connections
+                    .entry(peer_id)
+                    .and_modify(|c| c.timeout(count));
             }
         }
         self.check_request_accounting("After timeouts");
@@ -194,7 +204,8 @@ impl Transfer {
     // private
     fn check_request_accounting(&self, when: &str) {
         // This where request leaking gets caught like a lil bitch
-        #[cfg(debug_assertions)] { 
+        #[cfg(debug_assertions)]
+        {
             let mut nums: HashMap<PeerId, usize> =
                 self.connections.keys().map(|id| (*id, 0)).collect();
             for piece in &self.pieces {
@@ -205,7 +216,8 @@ impl Transfer {
             for (peer_id, count) in nums {
                 if let Some(con) = self.connections.get(&peer_id) {
                     debug_assert_eq!(
-                        con.sent_requests(), count,
+                        con.sent_requests(),
+                        count,
                         "{peer_id}: connection RQ={}, piece downloading={count}, when={when}",
                         con.sent_requests(),
                     );
@@ -216,12 +228,8 @@ impl Transfer {
         #[cfg(not(debug_assertions))]
         let _ = when;
     }
-    
-    pub async fn handle_event(
-        &mut self,
-        peer_id: &PeerId,
-        message: Message
-    ) -> Result<()> {
+
+    pub async fn handle_event(&mut self, peer_id: &PeerId, message: Message) -> Result<()> {
         let span = info_span!("connection", id = %peer_id);
         let guard = span.enter();
         match message {
@@ -235,34 +243,61 @@ impl Transfer {
             Message::Have { index } => {
                 debug!("Got have {index}");
                 self.check_piece_index(index, "have")?;
-                self.connections.entry(*peer_id).and_modify(|c| c.set_piece(index));
+                self.connections
+                    .entry(*peer_id)
+                    .and_modify(|c| c.set_piece(index));
             }
 
-            Message::Request { index, begin, length } => {
+            Message::Request {
+                index,
+                begin,
+                length,
+            } => {
                 self.check_piece_length(index, begin, length, false, "request")?;
                 let block_index = Self::block_index(begin);
                 debug!("Got request {index}:{block_index}");
-                if self.connections.get(peer_id).map(|c| c.can_upload()).unwrap_or(false)
-                    && self.piece_bitfield.is_set(index) {
-                        let piece = self.read_piece(index, begin, length).await?;
-                        debug!("Sent block {index}:{block_index} ({})", piece.len());
-                        if let Some(c) = self.connections.get_mut(peer_id) {
-                            c.send_piece(index, begin, piece).await;
-                        }
-                    } else if let Some(c) = self.connections.get_mut(peer_id) && c.supports_fast {
-                        c.send(Message::Reject { index, begin, length }).await;
-                    } else {
-                        // maybe queue this shit to send it later
+                if self
+                    .connections
+                    .get(peer_id)
+                    .map(|c| c.can_upload())
+                    .unwrap_or(false)
+                    && self.piece_bitfield.is_set(index)
+                {
+                    let piece = self.read_piece(index, begin, length).await?;
+                    debug!("Sent block {index}:{block_index} ({})", piece.len());
+                    if let Some(c) = self.connections.get_mut(peer_id) {
+                        c.send_piece(index, begin, piece).await;
                     }
+                } else if let Some(c) = self.connections.get_mut(peer_id)
+                    && c.supports_fast
+                {
+                    c.send(Message::Reject {
+                        index,
+                        begin,
+                        length,
+                    })
+                    .await;
+                } else {
+                    // maybe queue this shit to send it later
+                }
             }
 
-            Message::Cancel { index, begin, length } => {
+            Message::Cancel {
+                index,
+                begin,
+                length,
+            } => {
                 self.check_piece_length(index, begin, length, true, "cancel")?;
                 let block_index = Self::block_index(begin);
                 debug!("Got cancel {index}:{block_index}");
             }
 
-            Message::Piece { index, begin, piece: block, response_time } => {
+            Message::Piece {
+                index,
+                begin,
+                piece: block,
+                response_time,
+            } => {
                 self.check_piece_begin(index, begin, true, "piece")?;
                 let block_index = Self::block_index(begin);
 
@@ -270,22 +305,27 @@ impl Transfer {
                 if !self.pieces[index].has_obtrined(block_index) {
                     debug!("Got block {index}:{block_index}");
                     let who_downloading = self.pieces[index].who_downloading(block_index);
-                    self.connections.entry(*peer_id).and_modify(
-                        |c| c.receive_piece(
+                    self.connections.entry(*peer_id).and_modify(|c| {
+                        c.receive_piece(
                             block.len(),
                             response_time,
-                            who_downloading.map(|w| w == peer_id).unwrap_or(false))
-                    );
+                            who_downloading.map(|w| w == peer_id).unwrap_or(false),
+                        )
+                    });
 
-                    if let Some(who) = who_downloading && who != peer_id {
-                        self.connections.get_mut(who).map(|c| c.sub_sent_requests(1));
+                    if let Some(who) = who_downloading
+                        && who != peer_id
+                    {
+                        self.connections
+                            .get_mut(who)
+                            .map(|c| c.sub_sent_requests(1));
                     }
 
                     self.write_block(index, block_index, &block).await?;
                     if self.pieces[index].place(block_index, block, true).is_some() {
                         self.piece_bitfield.set(index);
                         for con in self.connections.values() {
-                            con.send(Message::Have {index}).await;
+                            con.send(Message::Have { index }).await;
                         }
                         let (downloaded, left) = self.downloaded_left();
                         let _ = self.tracker_tx.send(tracker::Progress {
@@ -295,15 +335,18 @@ impl Transfer {
                             uploaded: self.uploaded,
                         });
                     }
-                    
+
                     self.progress_tx.send_modify(|p| {
                         if let Some(t) = p.transfer.as_mut() {
                             for (f, file) in self.metadata.files.iter().enumerate() {
-                                t.files[f].piece_bitfield = self.piece_bitfield.subfield(file.pieces);
+                                t.files[f].piece_bitfield =
+                                    self.piece_bitfield.subfield(file.pieces);
                             }
                             t.downloaded = self.downloaded_left().0;
                             t.piece_bitfield = self.piece_bitfield.clone();
-                            t.active_pieces = self.pieces.iter()
+                            t.active_pieces = self
+                                .pieces
+                                .iter()
                                 .enumerate()
                                 .filter(|(_, p)| p.is_active())
                                 .map(|(p, piece)| PieceProgress {
@@ -337,28 +380,38 @@ impl Transfer {
             }
 
             // extensions
-            Message::Reject { index, begin, length } => {
+            Message::Reject {
+                index,
+                begin,
+                length,
+            } => {
                 self.check_piece_length(index, begin, length, true, "reject")?;
                 let block_index = Self::block_index(begin);
                 debug!("Got rejection for block {index}:{block_index}");
                 // TODO implement BEP semantics properly
                 let who_downloading = self.pieces[index].who_downloading(block_index);
-                if let Some(who) = who_downloading && who == peer_id {
+                if let Some(who) = who_downloading
+                    && who == peer_id
+                {
                     self.connections.entry(*peer_id).and_modify(|c| c.reject());
                     self.pieces[index].reject(block_index, *peer_id);
                 }
             }
             Message::HaveAll => {
                 debug!("Got have all");
-                self.connections.entry(*peer_id).and_modify(|c| c.set_pieces());
-            },
+                self.connections
+                    .entry(*peer_id)
+                    .and_modify(|c| c.set_pieces());
+            }
             Message::HaveNone => {
                 debug!("Got have none");
-                self.connections.entry(*peer_id).and_modify(|c| c.unset_pieces());
-            },
+                self.connections
+                    .entry(*peer_id)
+                    .and_modify(|c| c.unset_pieces());
+            }
             Message::Suggest { index } => {
                 debug!("Got suggest for block {index}");
-            },
+            }
             Message::AllowedFast { .. } => (),
 
             _ => (),
@@ -378,12 +431,14 @@ impl Transfer {
         config_rx: &watch::Receiver<Config>,
         torrent_files: &mut [File],
     ) -> Result<(Vec<Piece>, Bitfield)> {
-        let mut pieces: Vec<_> =
-            std::iter::repeat_with(|| None)
-                .take(metadata.num_pieces)
-                .collect();
-        let path = config_rx.borrow().data_path
-            .join(info_hash.to_string()).join("state");
+        let mut pieces: Vec<_> = std::iter::repeat_with(|| None)
+            .take(metadata.num_pieces)
+            .collect();
+        let path = config_rx
+            .borrow()
+            .data_path
+            .join(info_hash.to_string())
+            .join("state");
         let mut bitfield = Bitfield::new(metadata.num_pieces);
         if fs::try_exists(&path).await? {
             info!("Recovering");
@@ -391,15 +446,18 @@ impl Transfer {
                 .read(true)
                 .write(true)
                 .create(true)
-                .open(&path).await?;
+                .open(&path)
+                .await?;
             let mut bytes = vec![0; metadata.num_pieces.div_ceil(8)];
             file.read_exact(&mut bytes).await?;
             bitfield.set_bytes(&bytes);
             let mut active = HashSet::new();
-            let mut block_buffer = vec![0; metadata.piece_length.div_ceil(Self::BLOCK_SIZE).div_ceil(8)];
+            let mut block_buffer =
+                vec![0; metadata.piece_length.div_ceil(Self::BLOCK_SIZE).div_ceil(8)];
             while let Ok(p) = file.read_u64_le().await.map(|p| p as usize) {
                 let num_blocks = metadata.piece_length(p).div_ceil(Self::BLOCK_SIZE);
-                file.read_exact(&mut block_buffer[..num_blocks.div_ceil(8)]).await?;
+                file.read_exact(&mut block_buffer[..num_blocks.div_ceil(8)])
+                    .await?;
                 let mut block_bitfield = Bitfield::new(num_blocks);
                 block_bitfield.set_bytes(&block_buffer);
                 pieces[p] = Some(Piece::from_slice(
@@ -417,7 +475,7 @@ impl Transfer {
                     Self::BLOCK_SIZE,
                     metadata.piece_length(p),
                     metadata.pieces[p],
-                    written
+                    written,
                 ));
             }
         } else {
@@ -427,7 +485,7 @@ impl Transfer {
                     Self::BLOCK_SIZE,
                     metadata.piece_length(p),
                     metadata.pieces[p],
-                    false
+                    false,
                 ));
             }
         }
@@ -444,12 +502,16 @@ impl Transfer {
         for piece_file in &metadata.piece_files[index] {
             let src_file = &mut torrent_files[piece_file.file_index];
 
-            src_file.seek(SeekFrom::Start(piece_file.file_offset as u64)).await?;
+            src_file
+                .seek(SeekFrom::Start(piece_file.file_offset as u64))
+                .await?;
 
-            src_file.read_exact(
-                &mut piece[piece_file.piece_offset
-                    ..piece_file.piece_offset + piece_file.length]
-            ).await?;
+            src_file
+                .read_exact(
+                    &mut piece
+                        [piece_file.piece_offset..piece_file.piece_offset + piece_file.length],
+                )
+                .await?;
         }
 
         Ok(piece)
@@ -460,11 +522,8 @@ impl Transfer {
             return Ok(piece[begin..begin + length].to_vec());
         }
 
-        let piece = Self::read_piece_from_disk(
-            &self.metadata,
-            &mut self.torrent_files,
-            index,
-        ).await?;
+        let piece =
+            Self::read_piece_from_disk(&self.metadata, &mut self.torrent_files, index).await?;
 
         let read = piece[begin..begin + length].to_vec();
         self.piece_cache.insert(index, piece);
@@ -472,20 +531,28 @@ impl Transfer {
         Ok(read)
     }
 
-    async fn write_block(&mut self, piece_index: usize, block_index: usize, block: &[u8]) -> Result<()> {
+    async fn write_block(
+        &mut self,
+        piece_index: usize,
+        block_index: usize,
+        block: &[u8],
+    ) -> Result<()> {
         let block_start = Self::BLOCK_SIZE * block_index;
-        let block_end = (block_start + Self::BLOCK_SIZE).min(self.metadata.piece_length(piece_index));
+        let block_end =
+            (block_start + Self::BLOCK_SIZE).min(self.metadata.piece_length(piece_index));
         for piece_file in &self.metadata.piece_files[piece_index] {
             let overlap_start = block_start.max(piece_file.piece_offset);
             let overlap_end = block_end.min(piece_file.piece_offset + piece_file.length);
             if overlap_start < overlap_end {
                 let dst_file = &mut self.torrent_files[piece_file.file_index];
-                dst_file.seek(SeekFrom::Start(
-                    (overlap_start - piece_file.piece_offset + piece_file.file_offset) as u64
-                )).await?;
-                dst_file.write_all(
-                    &block[(overlap_start - block_start)..(overlap_end - block_start)]
-                ).await?;
+                dst_file
+                    .seek(SeekFrom::Start(
+                        (overlap_start - piece_file.piece_offset + piece_file.file_offset) as u64,
+                    ))
+                    .await?;
+                dst_file
+                    .write_all(&block[(overlap_start - block_start)..(overlap_end - block_start)])
+                    .await?;
                 debug!(piece = %piece_index, block = %block_index, "Written to {}",
                     self.metadata.files[piece_file.file_index].path.to_string_lossy());
             }
@@ -537,8 +604,15 @@ impl Transfer {
         let sequential = self.progress_tx.borrow().sequential;
         for _ in 0..Self::PRIORITIES.len() {
             self.priority_cursor = (self.priority_cursor + 1) % Self::PRIORITIES.len();
-            let pieces: Vec<_> = self.progress_tx.borrow()
-                .transfer.as_ref().unwrap().files.iter().enumerate()
+            let pieces: Vec<_> = self
+                .progress_tx
+                .borrow()
+                .transfer
+                .as_ref()
+                .unwrap()
+                .files
+                .iter()
+                .enumerate()
                 .filter(|(_, f)| f.priority == Self::PRIORITIES[self.priority_cursor])
                 .flat_map(|(f, _)| self.metadata.files[f].pieces.clone())
                 .map(|p| (p, &self.pieces[p]))
@@ -562,7 +636,8 @@ impl Transfer {
                         }
                     }
                 }
-                if let Some(p) = active.choose(&mut rng())
+                if let Some(p) = active
+                    .choose(&mut rng())
                     .or_else(|| inactive.choose(&mut rng()))
                     .copied()
                 {
@@ -578,7 +653,8 @@ impl Transfer {
         match command {
             SetPriority(index, priority) => {
                 self.progress_tx.send_modify(|prog| {
-                    prog.transfer.as_mut()
+                    prog.transfer
+                        .as_mut()
                         .and_then(|t| t.files.get_mut(index))
                         .map(|f| f.priority = priority);
                 });
@@ -593,7 +669,8 @@ impl Transfer {
             while self.connections[&peer_id].can_request() {
                 match self.find_or_keep_piece(&peer_id) {
                     Some(cursor) => {
-                        self.connections.entry(peer_id)
+                        self.connections
+                            .entry(peer_id)
                             .and_modify(|p| p.piece_cursor = Some(cursor));
                         if let Some(b) = self.pieces[cursor].find_available_block(&peer_id) {
                             self.request_block(&peer_id, cursor, b).await?;
@@ -603,7 +680,9 @@ impl Transfer {
                         }
                     }
                     None => {
-                        self.connections.entry(peer_id).and_modify(|c| c.piece_cursor = None);
+                        self.connections
+                            .entry(peer_id)
+                            .and_modify(|c| c.piece_cursor = None);
                         break;
                     }
                 }
@@ -613,8 +692,8 @@ impl Transfer {
     }
 
     fn downloaded_left(&self) -> (usize, usize) {
-        let downloaded = (self.piece_bitfield.num_set() * self.metadata.piece_length)
-            .min(self.metadata.length);
+        let downloaded =
+            (self.piece_bitfield.num_set() * self.metadata.piece_length).min(self.metadata.length);
         let left = self.metadata.length - downloaded;
         (downloaded, left)
     }
@@ -625,8 +704,8 @@ impl Transfer {
 
         self.progress_tx.send_modify(|p| {
             for (id, con) in &self.connections {
-                p.peers.entry(*id).and_modify(
-                    |peer| peer.connection = Some(ConnectionProgress {
+                p.peers.entry(*id).and_modify(|peer| {
+                    peer.connection = Some(ConnectionProgress {
                         down_speed: con.downloaded_this_second(),
                         up_speed: con.uploaded_this_second(),
                         piece_bitfield: con.piece_bitfield().clone(),
@@ -639,7 +718,7 @@ impl Transfer {
                         timeout_rate: con.timeouts_this_second(),
                         reject_rate: con.rejects_this_second(),
                     })
-                );
+                });
             }
         });
         for con in self.connections.values_mut() {
@@ -666,7 +745,13 @@ impl Transfer {
         Ok(())
     }
 
-    fn check_piece_begin(&self, index: usize, begin: usize, boundary: bool, op: &str) -> Result<()> {
+    fn check_piece_begin(
+        &self,
+        index: usize,
+        begin: usize,
+        boundary: bool,
+        op: &str,
+    ) -> Result<()> {
         self.check_piece_index(index, op)?;
         if boundary {
             ensure!(
@@ -682,7 +767,14 @@ impl Transfer {
         Ok(())
     }
 
-    fn check_piece_length(&self, index: usize, begin: usize, length: usize, boundary: bool, op: &str) -> Result<()> {
+    fn check_piece_length(
+        &self,
+        index: usize,
+        begin: usize,
+        length: usize,
+        boundary: bool,
+        op: &str,
+    ) -> Result<()> {
         self.check_piece_begin(index, begin, boundary, op)?;
         let piece_length = self.metadata.piece_length(index);
         let block_length = (piece_length - begin).min(Self::BLOCK_SIZE);

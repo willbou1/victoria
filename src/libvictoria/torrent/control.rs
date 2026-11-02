@@ -1,15 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-    path::PathBuf,
     array,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    time::Duration,
 };
 
-use crate::libvictoria::{
-    types::*,
-    bitfield::Bitfield,
-    metainfo::Metadata,
-};
+use crate::libvictoria::{bitfield::Bitfield, metainfo::Metadata, types::*};
 
 #[derive(Debug)]
 pub struct Config {
@@ -53,15 +49,23 @@ pub struct TransferProgress {
 }
 
 impl TransferProgress {
-    pub fn new(metadata: &Metadata, piece_bitfield: Bitfield, active_pieces: Vec<PieceProgress>) -> Self {
+    pub fn new(
+        metadata: &Metadata,
+        piece_bitfield: Bitfield,
+        active_pieces: Vec<PieceProgress>,
+    ) -> Self {
         Self {
-            files: metadata.files.iter()
+            files: metadata
+                .files
+                .iter()
                 .map(|f| FileInfo {
                     relative_path: if f.path.components().nth(1).is_some() {
                         f.path.components().skip(1).collect()
                     } else {
                         f.path.clone()
-                    }.to_string_lossy().into_owned(),
+                    }
+                    .to_string_lossy()
+                    .into_owned(),
                     size: f.length,
                     piece_bitfield: piece_bitfield.subfield(f.pieces),
                     priority: FilePriority::Normal,
@@ -76,7 +80,7 @@ impl TransferProgress {
             active_pieces,
         }
     }
-    
+
     pub fn percentage(&self) -> f32 {
         self.downloaded as f32 * 100. / self.size as f32
     }
@@ -86,7 +90,7 @@ impl TransferProgress {
             return None;
         }
         Some(Duration::from_secs(
-            (self.size - self.downloaded) as u64 / self.down_speed as u64
+            (self.size - self.downloaded) as u64 / self.down_speed as u64,
         ))
     }
 }
@@ -255,9 +259,7 @@ pub enum Command {
 }
 
 #[derive(Debug)]
-pub struct DHTNodeInfo {
-
-}
+pub struct DHTNodeInfo {}
 
 #[derive(Debug)]
 pub struct DHTBucketInfo {
@@ -266,9 +268,7 @@ pub struct DHTBucketInfo {
 
 impl Default for DHTBucketInfo {
     fn default() -> Self {
-        Self {
-            nodes: Vec::new(),
-        }
+        Self { nodes: Vec::new() }
     }
 }
 

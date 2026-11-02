@@ -1,6 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-};
+use std::collections::{HashMap, VecDeque};
 
 pub struct PieceCache {
     pieces: HashMap<usize, Vec<u8>>,

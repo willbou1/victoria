@@ -1,16 +1,11 @@
-use anyhow::{Result, Context, ensure, anyhow};
-use tracing::{trace};
-use tokio::{
-    net::UdpSocket,
-};
+use anyhow::{Context, Result, anyhow, ensure};
+use rand::{Rng, rng};
 use reqwest::Url;
-use rand::{rng, Rng};
-use std::{
-    fmt,
-    time::{Duration},
-};
+use std::{fmt, time::Duration};
+use tokio::net::UdpSocket;
+use tracing::trace;
 
-use bencodedit::{accessor::BencodeAccessor, BencodeValue};
+use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
 use crate::libvictoria::types::*;
 
@@ -54,7 +49,8 @@ impl TrackerResponse {
                 leechers: root.map_optional(b"incomplete", |m| m.to_integer())?,
                 peers: PeerInfo::from_tracker_bencode(&root)?,
             })
-        }().context("while parsing metadata message")
+        }()
+        .context("while parsing metadata message")
     }
 
     fn from_udp_response(response: &[u8]) -> Result<Self> {
@@ -121,32 +117,26 @@ pub async fn request_udp(
 
     let sock = UdpSocket::bind("0.0.0.0:0").await?;
     sock.connect(
-        url.split("//").nth(1)
+        url.split("//")
+            .nth(1)
             .and_then(|path| path.split("/").next())
-            .ok_or(anyhow!("Malformed UDP tracker URL {url}"))?
-    ).await?;
+            .ok_or(anyhow!("Malformed UDP tracker URL {url}"))?,
+    )
+    .await?;
 
     // connect request
-    request[..8].copy_from_slice(
-        &0x41727101980u64.to_be_bytes()
-    );
-    request[8..12].copy_from_slice(
-        &0i32.to_be_bytes()
-    ); // action: connect
+    request[..8].copy_from_slice(&0x41727101980u64.to_be_bytes());
+    request[8..12].copy_from_slice(&0i32.to_be_bytes()); // action: connect
     rng().fill_bytes(&mut request[12..16]);
 
     // connect response
     for n in 0..(MAX_ATTEMPTS + 1) {
-        ensure!(
-            n < MAX_ATTEMPTS,
-            "Max attemps for connection"
-        );
+        ensure!(n < MAX_ATTEMPTS, "Max attemps for connection");
 
         sock.send(&request[..16]).await?;
 
-        match tokio::time::timeout(
-            Duration::from_secs(15 * (1 << n)),
-            sock.recv(&mut response)).await
+        match tokio::time::timeout(Duration::from_secs(15 * (1 << n)), sock.recv(&mut response))
+            .await
         {
             Ok(len) => {
                 let len = len?;
@@ -176,45 +166,27 @@ pub async fn request_udp(
 
     // announce request
     request[..8].copy_from_slice(&connection_id);
-    request[8..12].copy_from_slice(
-        &1i32.to_be_bytes()
-    ); // action: announce
+    request[8..12].copy_from_slice(&1i32.to_be_bytes()); // action: announce
     rng().fill_bytes(&mut request[12..16]);
     request[16..36].copy_from_slice(info_hash.as_ref());
     request[36..56].copy_from_slice(client_id.as_ref());
-    request[56..64].copy_from_slice(
-        &(progress.downloaded as i64).to_be_bytes()
-    );
-    request[64..72].copy_from_slice(
-        &(progress.left as i64).to_be_bytes()
-    );
-    request[72..80].copy_from_slice(
-        &(progress.uploaded as i64).to_be_bytes()
-    );
-    request[80..84].copy_from_slice(
-        &(progress.event.clone() as i32).to_be_bytes()
-    );
+    request[56..64].copy_from_slice(&(progress.downloaded as i64).to_be_bytes());
+    request[64..72].copy_from_slice(&(progress.left as i64).to_be_bytes());
+    request[72..80].copy_from_slice(&(progress.uploaded as i64).to_be_bytes());
+    request[80..84].copy_from_slice(&(progress.event.clone() as i32).to_be_bytes());
     request[84..88].fill(0); // TODO fill ip
     rng().fill_bytes(&mut request[88..92]);
-    request[92..96].copy_from_slice(
-        &(-1i32).to_be_bytes()
-    ); // num_want
-    request[96..98].copy_from_slice(
-        &6881u16.to_be_bytes()
-    ); // num_want
+    request[92..96].copy_from_slice(&(-1i32).to_be_bytes()); // num_want
+    request[96..98].copy_from_slice(&6881u16.to_be_bytes()); // num_want
 
     // announce response
     for n in 0..(MAX_ATTEMPTS + 1) {
-        ensure!(
-            n < MAX_ATTEMPTS,
-            "Max attemps for announce"
-        );
+        ensure!(n < MAX_ATTEMPTS, "Max attemps for announce");
 
         sock.send(&request[..98]).await?;
 
-        match tokio::time::timeout(
-            Duration::from_secs(15 * (1 << n)),
-            sock.recv(&mut response)).await
+        match tokio::time::timeout(Duration::from_secs(15 * (1 << n)), sock.recv(&mut response))
+            .await
         {
             Ok(len) => {
                 let len = len?;
@@ -261,13 +233,14 @@ pub async fn request_http(
         }
     }
 
-    let res = reqwest::get(
-        format!("{url}&info_hash={}&peer_id={}", info_hash.encode(), client_id.encode())
-    ).await?;
+    let res = reqwest::get(format!(
+        "{url}&info_hash={}&peer_id={}",
+        info_hash.encode(),
+        client_id.encode()
+    ))
+    .await?;
     let body = res.bytes().await?;
-    let response = TrackerResponse::from_bencode(&body)
-        .map_err(|e| anyhow!("{:?}", e))?;
+    let response = TrackerResponse::from_bencode(&body).map_err(|e| anyhow!("{:?}", e))?;
 
     Ok(response)
 }
-

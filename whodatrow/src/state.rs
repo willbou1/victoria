@@ -3,8 +3,12 @@ use std::{collections::HashMap, marker::PhantomData};
 use super::*;
 
 pub enum TableEvent {
-    Up, Down, First, Last,
-    Mark, Unmark,
+    Up,
+    Down,
+    First,
+    Last,
+    Mark,
+    Unmark,
     ToggleTotal,
     ToggleSub(Option<(usize, usize)>),
     ToggleSection(char),
@@ -43,7 +47,7 @@ impl Default for BoundingBox {
 
 pub struct Focus<'a, K>
 where
-    K: Copy + 'static
+    K: Copy + 'static,
 {
     pub row: RowHash,
     pub section: Option<(K, &'a mut TableState<K>)>,
@@ -69,28 +73,23 @@ where
 
 impl<K> TableState<K>
 where
-    K:  Copy + 'static,
+    K: Copy + 'static,
 {
     pub fn new<R>(is_root: bool) -> Self
     where
-        R: Row<SectionKey = K> + 'static
+        R: Row<SectionKey = K> + 'static,
     {
         Self {
             show_total: true,
-            prev_focused: if is_root {None} else {Some(false)},
+            prev_focused: if is_root { None } else { Some(false) },
             focused_section: None,
             selected_row: None,
             row_states: HashMap::new(),
-            column_sorts: std::iter::repeat_n(
-                Sort::default(),
-                R::columns().len()
-            ).collect(),
+            column_sorts: std::iter::repeat_n(Sort::default(), R::columns().len()).collect(),
             default_row_state: RowState::<K>::new::<R>(),
             ordered_row_hashes: Vec::new(),
-            sub_keys: R::sub_sections().iter()
-                .map(|s| s.key()).collect(),
-            sub_section_keys: R::sub_sections().iter()
-                .map(|s| s.section_key()).collect(),
+            sub_keys: R::sub_sections().iter().map(|s| s.key()).collect(),
+            sub_section_keys: R::sub_sections().iter().map(|s| s.section_key()).collect(),
             bounding_box: Default::default(),
         }
     }
@@ -106,14 +105,19 @@ where
     }
 
     pub(crate) fn reconcile(&mut self, ordered_row_hashes: Vec<RowHash>) {
-        if let Some(hash) = self.selected_row && !ordered_row_hashes.contains(&hash) {
+        if let Some(hash) = self.selected_row
+            && !ordered_row_hashes.contains(&hash)
+        {
             self.selected_row = ordered_row_hashes.first().map(|f| *f);
         } else if let None = self.selected_row {
             self.selected_row = ordered_row_hashes.first().map(|f| *f);
         }
-        self.row_states.retain(|k, _| ordered_row_hashes.contains(k));
+        self.row_states
+            .retain(|k, _| ordered_row_hashes.contains(k));
         for hash in &ordered_row_hashes {
-            self.row_states.entry(*hash).or_insert(self.default_row_state.clone());
+            self.row_states
+                .entry(*hash)
+                .or_insert(self.default_row_state.clone());
         }
         self.ordered_row_hashes = ordered_row_hashes;
     }
@@ -123,20 +127,17 @@ where
         let section = self.focused_section.and_then(|index| {
             Some((
                 self.sub_section_keys[index]?,
-                self.row_states.get_mut(&row)?
-                    .sub_table_states[index]
-                    .as_mut()?,
+                self.row_states.get_mut(&row)?.sub_table_states[index].as_mut()?,
             ))
         });
-        Some(Focus {
-            row,
-            section,
-        })
+        Some(Focus { row, section })
     }
 
     fn unfocus_branch(&mut self) {
         if let Some(index) = self.focused_section {
-            let state = self.selected_row.as_ref()
+            let state = self
+                .selected_row
+                .as_ref()
                 .and_then(|hash| self.row_states.get_mut(hash))
                 .and_then(|row| row.sub_table_states[index].as_mut());
             self.focused_section = None;
@@ -152,16 +153,24 @@ where
             return;
         }
 
-        if let Some(hash) = self.row_states.iter()
+        if let Some(hash) = self
+            .row_states
+            .iter()
             .find(|(_, state)| state.bounding_box.intersects(col, row))
-            .map(|(h, _)| h).copied()
+            .map(|(h, _)| h)
+            .copied()
         {
             // TODO check if really necessary
             self.unfocus_branch();
 
             self.selected_row = Some(hash);
-            for (s, sub_state) in self.row_states.get_mut(&hash)
-                .unwrap().sub_table_states.iter_mut().enumerate()
+            for (s, sub_state) in self
+                .row_states
+                .get_mut(&hash)
+                .unwrap()
+                .sub_table_states
+                .iter_mut()
+                .enumerate()
             {
                 if let Some(sub_state) = sub_state.as_mut()
                     && sub_state.bounding_box.intersects(col, row)
@@ -178,8 +187,7 @@ where
     pub fn handle_event(&mut self, event: TableEvent) {
         use TableEvent::*;
         match event {
-            Select(col, row) | ToggleSub(Some((col, row))) =>
-                self.focus_position(col, row),
+            Select(col, row) | ToggleSub(Some((col, row))) => self.focus_position(col, row),
             _ => (),
         }
         self.handle_event_internal(event, None);
@@ -188,12 +196,14 @@ where
     fn handle_event_internal(
         &mut self,
         event: TableEvent,
-        parent_focused_section: Option<&mut Option<usize>>
+        parent_focused_section: Option<&mut Option<usize>>,
     ) {
         use TableEvent::*;
         // Dispatch to focused table
         if let Some(index) = self.focused_section {
-            let state = self.selected_row.as_ref()
+            let state = self
+                .selected_row
+                .as_ref()
                 .and_then(|hash| self.row_states.get_mut(hash))
                 .and_then(|row| row.sub_table_states[index].as_mut());
 
@@ -216,14 +226,20 @@ where
             ToggleSub(None) => self.toggle_sub(),
             ToggleSection(key) => self.toggle_section(key),
             FocusSection(key) => self.focus_section(key),
-            UnfocusSection => if let Some(parent_focused_section) = parent_focused_section {
-                *parent_focused_section = None;
-                self.prev_focused = Some(false);
+            UnfocusSection => {
+                if let Some(parent_focused_section) = parent_focused_section {
+                    *parent_focused_section = None;
+                    self.prev_focused = Some(false);
+                }
             }
 
             Select(col, row) => {
-                if let Some(row_state) = self.selected_row_mut() && row_state.show_sub {
-                    if let Some(index) = row_state.section_bounding_boxes.iter()
+                if let Some(row_state) = self.selected_row_mut()
+                    && row_state.show_sub
+                {
+                    if let Some(index) = row_state
+                        .section_bounding_boxes
+                        .iter()
                         .position(|b| b.intersects(col, row))
                     {
                         row_state.toggle_section(index, false);
@@ -236,7 +252,7 @@ where
                 {
                     self.toggle_sub();
                 }
-            },
+            }
         }
     }
 
@@ -249,10 +265,13 @@ where
 
     fn for_selected_or_marked<F>(&mut self, f: F)
     where
-        F: Fn(&mut RowState<K>)
+        F: Fn(&mut RowState<K>),
     {
-        let marked_rows: Vec<_> = self.row_states.iter_mut()
-            .map(|(_, v)| v).filter(|v| v.marked)
+        let marked_rows: Vec<_> = self
+            .row_states
+            .iter_mut()
+            .map(|(_, v)| v)
+            .filter(|v| v.marked)
             .collect();
         if marked_rows.is_empty() {
             if let Some(row) = self.selected_row_mut() {
@@ -325,7 +344,9 @@ where
             return;
         };
 
-        let Some(index) = self.ordered_row_hashes.iter()
+        let Some(index) = self
+            .ordered_row_hashes
+            .iter()
             .position(|hash| *hash == selected)
         else {
             return;
@@ -356,17 +377,13 @@ where
 {
     fn new<R>() -> Self
     where
-        R: Row<SectionKey = K> + 'static
+        R: Row<SectionKey = K> + 'static,
     {
         Self {
             marked: false,
             show_sub: false,
-            show_sections: std::iter::repeat_n(
-                false,
-                R::sub_sections().len(),
-            ).collect(),
-            sub_table_states: R::sub_sections().iter()
-                .map(|s| s.new_state()).collect(),
+            show_sections: std::iter::repeat_n(false, R::sub_sections().len()).collect(),
+            sub_table_states: R::sub_sections().iter().map(|s| s.new_state()).collect(),
             section_bounding_boxes: vec![Default::default(); R::sub_sections().len()],
             bounding_box: Default::default(),
 
@@ -376,13 +393,26 @@ where
 
     pub(crate) fn place(&mut self, col: usize, row: usize, width: usize, height: usize) {
         self.bounding_box = BoundingBox {
-            col, row, width, height
+            col,
+            row,
+            width,
+            height,
         };
     }
 
-    pub(crate) fn place_section(&mut self, index: usize, col: usize, row: usize, width: usize, height: usize) {
+    pub(crate) fn place_section(
+        &mut self,
+        index: usize,
+        col: usize,
+        row: usize,
+        width: usize,
+        height: usize,
+    ) {
         self.section_bounding_boxes[index] = BoundingBox {
-            col, row, width, height
+            col,
+            row,
+            width,
+            height,
         };
     }
 
@@ -412,4 +442,3 @@ where
         self.show_sections[index] = true;
     }
 }
-

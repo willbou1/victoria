@@ -14,27 +14,27 @@ while being pleasant on the eyes.
 ## BitTorrent
 | Feature | Status | Receive | Send | Notes |
 |---|---|---|---|---|
-| Bencode parser | Implemented | | | |
-| Torrent file parsing | Implemented | | | Lacks nodes and HTTP seeds |
-| Magnet link support | Implemented | | | Lacks nodes |
-| UDP trackers | Implemented | ✅ | | |
-| HTTP trackers | Implemented | ✅ | | |
-| Peer wire protocol | Implemented | ✅ | ✅ | |
-| Metadata exchange | Implemented | ✅ | ✅ | |
-| PEX | Implemented | ✅ | | |
-| uTP | Unimplemented | | | |
-| Piece transfer | Implemented | ✅ | ✅ | Lacks end-game and opportunistic unchoking|
-| Piece verification | Implemented | | | |
-| Sequential downloading | Implemented | | | |
-| File priorities | Implemented | | | |
+| Bencode parser | ✅ | | | |
+| Torrent file parsing | ✅ | | | Lacks nodes and HTTP seeds |
+| Magnet link support | ✅ | | | Lacks nodes |
+| UDP trackers | ✅ | ✅ | ❌ | |
+| HTTP trackers | ✅ | ✅ | ❌ | |
+| Peer wire protocol | ✅ | ✅ | ✅ | |
+| Metadata exchange | ✅ | ✅ | ✅ | |
+| PEX | ✅ | ✅ | ❌ | |
+| uTP | ❌ | | | |
+| Piece transfer | ✅ | ✅ | ✅ | Lacks end-game and opportunistic unchoking|
+| Piece verification | ✅ | | | |
+| Sequential downloading | ✅ | | | |
+| File priorities | ✅ | | | |
 
 ## DHT
 | Feature | Status |
 |---|---|
-| Bootstrapping | Implemented |
-| Peer discovery | Implemented |
-| Maintenance | Unimplemented |
-| Contributing | Unimplemented |
+| Bootstrapping | ✅ |
+| Peer discovery | ✅ |
+| Maintenance | ❌ |
+| Contributing | ❌ |
 
 # Usage
 Launch the TUI:

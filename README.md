@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/willbou1/victoria/main/assets/header.png" width="750" height="300" alt="banner">
+<img src="https://raw.githubusercontent.com/willbou1/victoria/master/assets/header.png" width="750" height="300" alt="banner">
 
 **Victoria** is a BitTorrent client written in Rust with the intention
 of deeply exploring the BitTorrent protocol for my own satisfaction

@@ -90,15 +90,22 @@ impl Piece {
         block_size: usize,
         hash: Hash,
         data: &[u8],
+        downloaded_bitfield: Option<&Bitfield>,
     ) -> Self {
         let mut blocks = Vec::new();
-        for block in data.chunks_exact(block_size) {
-            blocks.push(Block::new(BlockState::Downloaded(block.to_vec())));
+        for (b, block) in data.chunks_exact(block_size).enumerate() {
+            blocks.push(Block::new(
+                if downloaded_bitfield.map(|bf| bf.is_set(b)).unwrap_or(true) {
+                    BlockState::Downloaded(block.to_vec())
+                } else {
+                    BlockState::Unobtained
+                }
+            ));
         }
         Self {
             block_size,
             blocks,
-            downloaded_blocks: 0,
+            downloaded_blocks: downloaded_bitfield.map(|bf| bf.num_set()).unwrap_or(0),
             downloading_blocks: 0,
             verification_failures: 0,
             written: false,

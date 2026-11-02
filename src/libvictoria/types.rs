@@ -163,7 +163,7 @@ impl EndpointV6 {
         s.parse::<Ipv6Addr>().ok().map(|ip| Self(SocketAddrV6::new(ip, port, 0, 0)))
     }
 
-    pub fn from_compact(compact: &[u8; 6]) -> Self {
+    pub fn from_compact(compact: &[u8; 18]) -> Self {
         let ip = Ipv6Addr::from_octets(compact[..16].try_into().unwrap());
         let port = u16::from_be_bytes(compact[16..18].try_into().unwrap());
         Self(SocketAddrV6::new(ip, port, 0, 0))

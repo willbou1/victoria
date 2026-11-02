@@ -3,12 +3,12 @@ mod piece_cache;
 
 use anyhow::{Result, ensure};
 use tokio::{
-    fs,
+    fs::{self, File},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc, watch},
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, VecDeque, HashSet},
     io::SeekFrom,
 };
 use rand::{rng, seq::IndexedRandom};
@@ -41,6 +41,7 @@ pub struct Transfer {
     piece_bitfield: Bitfield,
     priority_cursor: usize,
     connections: HashMap<PeerId, Connection>,
+    torrent_files: Vec<File>,
     piece_cache: PieceCache,
     uploaded: usize,
 }
@@ -63,8 +64,21 @@ impl Transfer {
         progress_tx: watch::Sender<Progress>,
         config_rx: watch::Receiver<Config>,
     ) -> Result<Self> {
+        let mut files = Vec::new();
+        let base_path = config_rx.borrow().download_path.clone();
+        fs::create_dir_all(&base_path).await?;
+        for file in &metadata.files {
+            let path = base_path.join(&file.path);
+            fs::create_dir_all(&path.parent().unwrap()).await?;
+            let torrent_file = fs::OpenOptions::new()
+                .read(true).write(true).create(true)
+                .open(&path).await?;
+            torrent_file.set_len(file.length as u64).await?;
+            files.push(torrent_file);
+        }
+
         let (pieces, piece_bitfield)
-            = Self::load_state(&metadata, &info_hash, &config_rx).await?;
+            = Self::load_state(&metadata, &info_hash, &config_rx, &mut files).await?;
         let downloaded = (piece_bitfield.num_set() * metadata.piece_length).min(metadata.length);
         let left = metadata.length - downloaded;
         let _ = tracker_tx.send(tracker::Progress {
@@ -73,9 +87,24 @@ impl Transfer {
             event: tracker::Event::Started,
             uploaded: 0,
         });
+
+        progress_tx.send_modify(|p| p.transfer = Some(
+            TransferProgress::new(&metadata, piece_bitfield.clone(),
+                pieces.iter().enumerate()
+                    .filter(|(_, p)| p.is_active())
+                    .map(|(p, piece)| PieceProgress {
+                        index: p,
+                        block_bitfield: piece.to_bitfield(),
+                        num_verification_failures: piece.num_verification_failures(),
+                    })
+                    .collect()
+            )
+        ));
+
         Ok(Self {
             info_hash,
             piece_cache: PieceCache::new(Self::PIEC_CACHE_CAPACITY),
+            torrent_files: files,
             pieces,
             priority_cursor: 0,
             metadata,
@@ -99,6 +128,10 @@ impl Transfer {
             .create(true)
             .open(&path).await?;
         file.write_all(self.piece_bitfield.as_bytes()).await?;
+        for (p, piece) in self.pieces.iter().filter(|p| p.is_active()).enumerate() {
+            file.write_u64_le(p as u64).await?;
+            file.write_all(piece.to_bitfield().as_bytes()).await?;
+        }
         Ok(())
     }
 
@@ -248,8 +281,8 @@ impl Transfer {
                         self.connections.get_mut(who).map(|c| c.sub_sent_requests(1));
                     }
 
-                    if let Some(piece) = self.pieces[index].place(block_index, block, true) {
-                        self.write_piece(index, &piece).await?;
+                    self.write_block(index, block_index, &block).await?;
+                    if self.pieces[index].place(block_index, block, true).is_some() {
                         self.piece_bitfield.set(index);
                         for con in self.connections.values() {
                             con.send(Message::Have {index}).await;
@@ -342,9 +375,13 @@ impl Transfer {
     async fn load_state(
         metadata: &Metadata,
         info_hash: &Hash,
-        config_rx: &watch::Receiver<Config>
+        config_rx: &watch::Receiver<Config>,
+        torrent_files: &mut [File],
     ) -> Result<(Vec<Piece>, Bitfield)> {
-        let mut pieces = vec![];
+        let mut pieces: Vec<_> =
+            std::iter::repeat_with(|| None)
+                .take(metadata.num_pieces)
+                .collect();
         let path = config_rx.borrow().data_path
             .join(info_hash.to_string()).join("state");
         let mut bitfield = Bitfield::new(metadata.num_pieces);
@@ -355,12 +392,27 @@ impl Transfer {
                 .write(true)
                 .create(true)
                 .open(&path).await?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).await?;
+            let mut bytes = vec![0; metadata.num_pieces.div_ceil(8)];
+            file.read_exact(&mut bytes).await?;
             bitfield.set_bytes(&bytes);
-            for p in 0..metadata.num_pieces {
+            let mut active = HashSet::new();
+            let mut block_buffer = vec![0; metadata.piece_length.div_ceil(Self::BLOCK_SIZE).div_ceil(8)];
+            while let Ok(p) = file.read_u64_le().await.map(|p| p as usize) {
+                let num_blocks = metadata.piece_length(p).div_ceil(Self::BLOCK_SIZE);
+                file.read_exact(&mut block_buffer[..num_blocks.div_ceil(8)]).await?;
+                let mut block_bitfield = Bitfield::new(num_blocks);
+                block_bitfield.set_bytes(&block_buffer);
+                pieces[p] = Some(Piece::from_slice(
+                    Self::BLOCK_SIZE,
+                    metadata.pieces[p],
+                    &Self::read_piece_from_disk(&metadata, torrent_files, p).await?,
+                    Some(&block_bitfield),
+                ));
+                active.insert(p);
+            }
+            for p in (0..metadata.num_pieces).filter(|p| !active.contains(p)) {
                 let written = bitfield.is_set(p);
-                pieces.push(Piece::new(
+                pieces[p] = Some(Piece::new(
                     Some(p),
                     Self::BLOCK_SIZE,
                     metadata.piece_length(p),
@@ -370,7 +422,7 @@ impl Transfer {
             }
         } else {
             for p in 0..metadata.num_pieces {
-                pieces.push(Piece::new(
+                pieces[p] = Some(Piece::new(
                     Some(p),
                     Self::BLOCK_SIZE,
                     metadata.piece_length(p),
@@ -379,51 +431,64 @@ impl Transfer {
                 ));
             }
         }
-        Ok((pieces, bitfield))
+        Ok((pieces.into_iter().filter_map(|p| p).collect(), bitfield))
+    }
+
+    async fn read_piece_from_disk(
+        metadata: &Metadata,
+        torrent_files: &mut [File],
+        index: usize,
+    ) -> Result<Vec<u8>> {
+        let mut piece = vec![0; metadata.piece_length(index)];
+
+        for piece_file in &metadata.piece_files[index] {
+            let src_file = &mut torrent_files[piece_file.file_index];
+
+            src_file.seek(SeekFrom::Start(piece_file.file_offset as u64)).await?;
+
+            src_file.read_exact(
+                &mut piece[piece_file.piece_offset
+                    ..piece_file.piece_offset + piece_file.length]
+            ).await?;
+        }
+
+        Ok(piece)
     }
 
     async fn read_piece(&mut self, index: usize, begin: usize, length: usize) -> Result<Vec<u8>> {
         if let Some(piece) = self.piece_cache.get(index) {
-            return Ok(piece[begin..(begin + length)].to_vec());
-        }
-        let mut piece = vec![0; self.metadata.piece_length(index)];
-
-        for piece_file in &self.metadata.piece_files[index] {
-            let file = &self.metadata.files[piece_file.file_index];
-            let path = self.config_rx.borrow().download_path
-                .join(file.path.clone());
-            let mut src_file = fs::OpenOptions::new()
-                .read(true)
-                .open(&path).await?;
-            src_file.seek(SeekFrom::Start(piece_file.file_offset as u64)).await?;
-            src_file.read_exact(
-                &mut piece[piece_file.piece_offset..(piece_file.piece_offset + piece_file.length)]
-            ).await?;
-            debug!(piece = %index, "Read from {}", &path.to_string_lossy());
+            return Ok(piece[begin..begin + length].to_vec());
         }
 
-        let read = piece[begin..(begin + length)].to_vec();
+        let piece = Self::read_piece_from_disk(
+            &self.metadata,
+            &mut self.torrent_files,
+            index,
+        ).await?;
+
+        let read = piece[begin..begin + length].to_vec();
         self.piece_cache.insert(index, piece);
+
         Ok(read)
     }
 
-    async fn write_piece(&self, index: usize, piece: &[u8]) -> Result<()> {
-        for piece_file in &self.metadata.piece_files[index] {
-            let file = &self.metadata.files[piece_file.file_index];
-            let path = self.config_rx.borrow().download_path
-                .join(file.path.clone());
-            fs::create_dir_all(&path.parent().unwrap()).await?;
-            let mut dst_file = fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&path).await?;
-            dst_file.set_len(file.length as u64).await?;
-            dst_file.seek(SeekFrom::Start(piece_file.file_offset as u64)).await?;
-            dst_file.write_all(
-                &piece[piece_file.piece_offset..(piece_file.piece_offset + piece_file.length)],
-            ).await?;
-            debug!(piece = %index, "Written to {}", &path.to_string_lossy());
+    async fn write_block(&mut self, piece_index: usize, block_index: usize, block: &[u8]) -> Result<()> {
+        let block_start = Self::BLOCK_SIZE * block_index;
+        let block_end = (block_start + Self::BLOCK_SIZE).min(self.metadata.piece_length(piece_index));
+        for piece_file in &self.metadata.piece_files[piece_index] {
+            let overlap_start = block_start.max(piece_file.piece_offset);
+            let overlap_end = block_end.min(piece_file.piece_offset + piece_file.length);
+            if overlap_start < overlap_end {
+                let dst_file = &mut self.torrent_files[piece_file.file_index];
+                dst_file.seek(SeekFrom::Start(
+                    (overlap_start - piece_file.piece_offset + piece_file.file_offset) as u64
+                )).await?;
+                dst_file.write_all(
+                    &block[(overlap_start - block_start)..(overlap_end - block_start)]
+                ).await?;
+                debug!(piece = %piece_index, block = %block_index, "Written to {}",
+                    self.metadata.files[piece_file.file_index].path.to_string_lossy());
+            }
         }
         Ok(())
     }
@@ -585,31 +650,11 @@ impl Transfer {
 
         self.uploaded += uploaded_this_second;
         self.progress_tx.send_modify(|p| {
-            let transfer = p.transfer.get_or_insert_with(|| TransferProgress {
-                files: self.metadata.files.iter()
-                    .map(|f| FileInfo {
-                        relative_path: if f.path.components().nth(1).is_some() {
-                            f.path.components().skip(1).collect()
-                        } else {
-                            f.path.clone()
-                        }.to_string_lossy().into_owned(),
-                        size: f.length,
-                        piece_bitfield: self.piece_bitfield.subfield(f.pieces),
-                        priority: FilePriority::Normal,
-                    })
-                    .collect(),
-                size: self.metadata.length,
-                down_speed: 0,
-                up_speed: 0,
-                downloaded: (self.piece_bitfield.num_set() * self.metadata.piece_length).min(self.metadata.length),
-                uploaded: 0,
-                piece_bitfield: self.piece_bitfield.clone(),
-                active_pieces: Vec::new(),
+            p.transfer.as_mut().map(|t| {
+                t.down_speed = downloaded_this_second;
+                t.up_speed = uploaded_this_second;
+                t.uploaded = self.uploaded;
             });
-
-            transfer.down_speed = downloaded_this_second;
-            transfer.up_speed = uploaded_this_second;
-            transfer.uploaded = self.uploaded;
         });
     }
 

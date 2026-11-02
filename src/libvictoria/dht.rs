@@ -20,7 +20,7 @@ use super::{
 
 const MAX_NUM_NODES_PER_BUCKET: usize = 8; 
 const GOOD_INTERVAL: Duration = Duration::from_mins(1);
-const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
+const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 struct Node {
@@ -259,7 +259,7 @@ impl DHTManager {
     }
 
     async fn maintain(&mut self) -> Result<()> {
-        for inactive in self.routing_table.get_maintainable(30) {
+        for inactive in self.routing_table.get_maintainable(5) {
             let target = self.id.random_with_prefix_length(inactive);
             debug!("Performing maintenance for {target} of {}", self.id);
             self.discovered_ids.remove(&target);

@@ -165,7 +165,7 @@ impl Torrent {
             return Ok(None);
         }
 
-        let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes);
+        let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes, None);
 
         Ok(Some(Self::new(
             metadata.name.clone(),
@@ -213,7 +213,7 @@ impl Torrent {
             info!("Parsed metadata");
 
             let info_hash = Hash(Sha1::digest(&metadata_bytes).into());
-            let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes);
+            let metadata_piece = Piece::from_slice(METADATA_BLOCK_SIZE, info_hash, &metadata_bytes, None);
 
             Self::new(
                 metadata.name.clone(),

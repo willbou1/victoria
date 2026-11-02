@@ -8,6 +8,7 @@ use std::{
 use crate::libvictoria::{
     types::*,
     bitfield::Bitfield,
+    metainfo::Metadata,
 };
 
 #[derive(Debug)]
@@ -52,6 +53,30 @@ pub struct TransferProgress {
 }
 
 impl TransferProgress {
+    pub fn new(metadata: &Metadata, piece_bitfield: Bitfield, active_pieces: Vec<PieceProgress>) -> Self {
+        Self {
+            files: metadata.files.iter()
+                .map(|f| FileInfo {
+                    relative_path: if f.path.components().nth(1).is_some() {
+                        f.path.components().skip(1).collect()
+                    } else {
+                        f.path.clone()
+                    }.to_string_lossy().into_owned(),
+                    size: f.length,
+                    piece_bitfield: piece_bitfield.subfield(f.pieces),
+                    priority: FilePriority::Normal,
+                })
+                .collect(),
+            size: metadata.length,
+            down_speed: 0,
+            up_speed: 0,
+            downloaded: (piece_bitfield.num_set() * metadata.piece_length).min(metadata.length),
+            uploaded: 0,
+            piece_bitfield,
+            active_pieces,
+        }
+    }
+    
     pub fn percentage(&self) -> f32 {
         self.downloaded as f32 * 100. / self.size as f32
     }
@@ -137,7 +162,7 @@ pub struct PeerProgress {
 }
 
 impl PeerProgress {
-    pub fn new(id: PeerId) -> Self {
+    pub(crate) fn new(id: PeerId) -> Self {
         Self {
             id,
             discovery: DiscoveryInfo::default(),
@@ -175,7 +200,7 @@ pub struct TrackerInfo {
 }
 
 impl TrackerInfo {
-    pub fn new(tier: usize, url: String) -> Self {
+    pub(crate) fn new(tier: usize, url: String) -> Self {
         Self {
             url,
             tier,
@@ -203,7 +228,7 @@ pub struct Progress {
 }
 
 impl Progress {
-    pub fn new(display_name: String, metadata_bitfield: Bitfield) -> Self {
+    pub(crate) fn new(display_name: String, metadata_bitfield: Bitfield) -> Self {
         Self {
             sequential: false,
             display_name,

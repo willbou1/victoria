@@ -1,35 +1,58 @@
-[![progress-banner](https://backend-staging.codecrafters.io/progress/bittorrent/63dc619c-d0d3-4ae1-81d4-f69232b2a435)](https://app-staging.codecrafters.io/users/willbou1?r=2qF)
+<img src="https://raw.githubusercontent.com/willbou1/victoria/main/assets/header.png" width="750" height="300" alt="banner">
 
-This is a starting point for Rust solutions to the
-["Build Your Own BitTorrent" Challenge](https://app.codecrafters.io/courses/bittorrent/overview).
+**Victoria** is a BitTorrent client written in Rust with the intention
+of deeply exploring the BitTorrent protocol for my own satisfaction
+and curiosity.
 
-In this challenge, you’ll build a BitTorrent client that's capable of parsing a
-.torrent file and downloading a file from a peer. Along the way, we’ll learn
-about how torrent files are structured, HTTP trackers, BitTorrent’s Peer
-Protocol, pipelining and more.
+The project includes a custom implementation of the BitTorrent peer
+protocol and Mainline DHT, with an asynchronous architecture powered
+by Tokio. A TUI framework called whodatrow was also custom-built for
+easy visualisation of all the client state. It makes deugging easy
+while being pleasant on the eyes.
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+# Features
+## BitTorrent
+| Feature | Status | Receive | Send | Notes |
+|---|---|---|---|---|
+| Bencode parser | Implemented | | | |
+| Torrent file parsing | Implemented | | | Lacks nodes and HTTP seeds |
+| Magnet link support | Implemented | | | Lacks nodes |
+| UDP trackers | Implemented | ✅ | | |
+| HTTP trackers | Implemented | ✅ | | |
+| Peer wire protocol | Implemented | ✅ | ✅ | |
+| Metadata exchange | Implemented | ✅ | ✅ | |
+| PEX | Implemented | ✅ | | |
+| uTP | Unimplemented | | | |
+| Piece transfer | Implemented | ✅ | ✅ | Lacks end-game and opportunistic unchoking|
+| Piece verification | Implemented | | | |
+| Sequential downloading | Implemented | | | |
+| File priorities | Implemented | | | |
 
-# Passing the first stage
+## DHT
+| Feature | Status |
+|---|---|
+| Bootstrapping | Implemented |
+| Peer discovery | Implemented |
+| Maintenance | Unimplemented |
+| Contributing | Unimplemented |
 
-The entry point for your BitTorrent implementation is in `src/main.rs`. Study
-and uncomment the relevant code, then run the command below to execute the tests
-on our servers:
+# Usage
+Launch the TUI:
+```bash
+victoria
+```
+Torrents will be under victoria in your download folder.
 
-```sh
-codecrafters submit
+# Building
+Clone the repository:
+```bash
+git clone <repository-url>
+cd victoria
+```
+Build the project:
+```bash
+cargo build --release
 ```
 
-Time to move on to the next stage!
-
-# Stage 2 & beyond
-
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `cargo (1.96)` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
-   `src/main.rs`. This command compiles your Rust project, so it might be slow
-   the first time you run it. Subsequent runs will be fast.
-1. Run `codecrafters submit` to submit your solution to CodeCrafters. Test
-   output will be streamed to your terminal.
+# License
+Victoria is licensed under the MIT License.

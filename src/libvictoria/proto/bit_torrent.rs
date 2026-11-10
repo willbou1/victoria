@@ -281,7 +281,7 @@ impl BitTorrent {
                     ]),
                     client: Some(format!("victoria/{}", env!("CARGO_PKG_VERSION"))),
                     // TODO respect this for other client
-                    max_requests: Some(200),
+                    max_requests: Some(250),
                     metadata_size: None,
                 },
                 write_request_times.clone(),

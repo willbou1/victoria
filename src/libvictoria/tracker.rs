@@ -2,9 +2,9 @@ use rand::seq::SliceRandom;
 use std::{fmt, time::Duration};
 use tokio::{
     select,
-    sync::{mpsc, watch},
+    sync::{mpsc, watch}, task::JoinSet,
 };
-use tracing::{Instrument, debug, info_span, trace};
+use tracing::{Instrument, debug, error, info_span, trace};
 
 use crate::libvictoria::{
     proto::tracker::{self, TrackerResponse, request_http, request_udp},
@@ -157,6 +157,7 @@ impl Trackers {
                 self.reset();
             }
 
+            let mut tasks = JoinSet::new();
             let mut good = Vec::new();
             let mut bad = Vec::new();
             for u in 0..self.urls[t].len() {
@@ -167,66 +168,79 @@ impl Trackers {
                         t.succeeded = Some(TrackerStatus::Announcing);
                     });
                 });
-                async {
-                    match match url.split(":").next().unwrap() {
-                        "http" | "https" => {
-                            request_http(&url, &self.client_id, &self.info_hash, &self.progress)
-                                .await
+
+                let client_id = self.client_id.clone();
+                let info_hash = self.info_hash.clone();
+                let progress = self.progress.clone();
+
+                tasks.spawn(async move {
+                    let result = match url.split_once("://").map(|(scheme, _)| scheme) {
+                        Some("http" | "https") => {
+                            request_http(&url, &client_id, &info_hash, &progress).await
                         }
-                        "udp" => match tokio::time::timeout(
-                            Duration::from_secs(10),
-                            request_udp(&url, &self.client_id, &self.info_hash, &self.progress),
-                        )
-                        .await
-                        {
-                            Ok(response) => response,
-                            Err(_) => {
-                                Err(anyhow::anyhow!("Exceeded tracker manager timeout for UDP"))
+                        Some("udp") => {
+                            match tokio::time::timeout(
+                                Duration::from_secs(10),
+                                request_udp(&url, &client_id, &info_hash, &progress),
+                            )
+                            .await
+                            {
+                                Ok(response) => response,
+                                Err(_) => Err(anyhow::anyhow!("Tracker manager timeout")),
                             }
-                        },
-                        proto => Err(anyhow::anyhow!("Unsopported protocol {proto}")),
-                    } {
-                        Ok(response) => {
-                            self.progress_tx.send_modify(|p| {
-                                p.trackers.entry(url.clone()).and_modify(|t| {
-                                    t.succeeded = Some(TrackerStatus::Succeeded);
-                                    t.seeders = response.seeders.map(|s| s as usize);
-                                    t.leechers = response.leechers.map(|l| l as usize);
-                                    t.interval = Some(Duration::from_secs(response.interval));
-                                    t.min_interval =
-                                        response.min_interval.map(|i| Duration::from_secs(i));
-                                    t.endpoints = Some(
-                                        response
-                                            .peers
-                                            .iter()
-                                            .map(|p| p.endpoints.iter().cloned().next().unwrap())
-                                            .collect(),
-                                    );
-                                });
-                            });
-                            self.update(response);
-                            debug!("Successfully announced");
-                            good.push(url);
-                            discovered = true;
                         }
-                        Err(e) => {
-                            self.progress_tx.send_modify(|p| {
-                                p.trackers.entry(url.clone()).and_modify(|t| {
-                                    t.succeeded = Some(TrackerStatus::Failed);
-                                });
-                            });
-                            debug!("Failed to announced {e:#}");
-                            bad.push(url);
-                        }
-                    }
-                    let _ = self
-                        .tx
-                        .send(torrent::Event::Tracker(self.peers.clone()))
-                        .await;
-                }
-                .instrument(span)
-                .await
+                        Some(proto) => Err(anyhow::anyhow!("Unsupported protocol {proto}")),
+                        None => Err(anyhow::anyhow!("Invalid tracker URL")),
+                    };
+
+                    (url, result)
+                }.instrument(span));
             }
+
+            while let Some(result) = tasks.join_next().await {
+                match result {
+                    Ok((url, Ok(response))) => {
+                        self.progress_tx.send_modify(|p| {
+                            p.trackers.entry(url.clone()).and_modify(|t| {
+                                t.succeeded = Some(TrackerStatus::Succeeded);
+                                t.seeders = response.seeders.map(|s| s as usize);
+                                t.leechers = response.leechers.map(|l| l as usize);
+                                t.interval = Some(Duration::from_secs(response.interval));
+                                t.min_interval =
+                                    response.min_interval.map(|i| Duration::from_secs(i));
+                                t.endpoints = Some(
+                                    response
+                                        .peers
+                                        .iter()
+                                        .map(|p| p.endpoints.iter().cloned().next().unwrap())
+                                        .collect(),
+                                );
+                            });
+                        });
+                        self.update(response);
+                        debug!("Successfully announced");
+                        good.push(url);
+                        discovered = true;
+                    }
+                    Ok((url, Err(e))) => {
+                        self.progress_tx.send_modify(|p| {
+                            p.trackers.entry(url.clone()).and_modify(|t| {
+                                t.succeeded = Some(TrackerStatus::Failed);
+                            });
+                        });
+                        debug!("Failed to announced {e:#}");
+                        bad.push(url);
+                    }
+                    Err(e) => {
+                        error!("Panic {e}");
+                    }
+                }
+                let _ = self
+                    .tx
+                    .send(torrent::Event::Tracker(self.peers.clone()))
+                    .await;
+            }
+
             good.extend(bad);
             self.urls[t] = good;
 

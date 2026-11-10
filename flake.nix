@@ -52,6 +52,8 @@
             rustc
             pkg-config
             tokio-console
+            flamegraph
+            perf
           ];
 
           buildInputs = with pkgs; [

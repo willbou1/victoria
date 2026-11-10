@@ -145,7 +145,7 @@ impl Row for PeerProgress {
     fn columns() -> &'static [Column<Self>] {
         use Alignment::*;
         &[
-            Column::DEFAULT,
+            //Column::DEFAULT,
             Column {
                 header: "T P D",
                 value: |peer, _| {
@@ -224,12 +224,12 @@ impl Row for PeerProgress {
                 ..Column::DEFAULT
             },
             Column {
-                header: "PL",
+                header: "Pipeline",
                 alignment: Right,
                 value: |peer, _| {
                     peer.connection
                         .as_ref()
-                        .map(|c| c.pipeline.to_string())
+                        .map(|c| format!("{}/{}", c.pipeline, c.max_pipeline))
                         .unwrap_or_default()
                 },
                 ..Column::DEFAULT
@@ -388,7 +388,7 @@ impl Row for PieceProgress {
         use Alignment::*;
         &[
             Column {
-                header: "Idx",
+                header: "Piece",
                 value: |piece, _| piece.index.to_string(),
                 ..Column::DEFAULT
             },

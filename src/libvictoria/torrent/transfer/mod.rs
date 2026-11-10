@@ -129,9 +129,9 @@ impl Transfer {
             .join("state");
         fs::create_dir_all(&path.parent().unwrap()).await?;
         let mut file = fs::OpenOptions::new()
-            .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&path)
             .await?;
         file.write_all(self.piece_bitfield.as_bytes()).await?;
@@ -149,7 +149,13 @@ impl Transfer {
         supports_fast: bool,
         initial_messages: Option<&mut VecDeque<Message>>,
     ) -> Result<()> {
-        let mut con = Connection::new(peer_id, tx, self.metadata.num_pieces, supports_fast);
+        let mut con = Connection::new(
+            peer_id,
+            tx,
+            self.progress_tx.clone(),
+            self.metadata.num_pieces,
+            supports_fast,
+        );
         if self.piece_bitfield.num_set() == 0 && supports_fast {
             con.send(Message::HaveNone).await;
         } else if self.piece_bitfield.num_set() == self.metadata.num_pieces && supports_fast {
@@ -170,15 +176,16 @@ impl Transfer {
         Ok(())
     }
 
+    pub fn set_max_pipeline(&mut self, peer_id: &PeerId, max_pipeline: Option<usize>) {
+        self.connections
+            .get_mut(peer_id)
+            .map(|c| c.set_max_pipeline(max_pipeline));
+    }
+
     pub fn sever_connection(&mut self, peer_id: &PeerId) {
         for piece in self.pieces.iter_mut() {
             piece.reset(&peer_id);
         }
-        self.progress_tx.send_modify(|p| {
-            p.peers
-                .entry(*peer_id)
-                .and_modify(|peer| peer.connection = None);
-        });
         self.connections.remove(peer_id);
     }
 
@@ -334,29 +341,39 @@ impl Transfer {
                             event: tracker::Event::Started,
                             uploaded: self.uploaded,
                         });
-                    }
-
-                    self.progress_tx.send_modify(|p| {
-                        if let Some(t) = p.transfer.as_mut() {
-                            for (f, file) in self.metadata.files.iter().enumerate() {
-                                t.files[f].piece_bitfield =
-                                    self.piece_bitfield.subfield(file.pieces);
+                        self.progress_tx.send_modify(|p| {
+                            if let Some(t) = p.transfer.as_mut() {
+                                for (f, file) in self.metadata.files.iter().enumerate() {
+                                    if file.pieces.contains(&index) {
+                                        t.files[f].piece_bitfield =
+                                            self.piece_bitfield.subfield(file.pieces);
+                                    }
+                                }
+                                t.downloaded = self.downloaded_left().0;
+                                t.piece_bitfield = self.piece_bitfield.clone();
+                                t.active_pieces.retain(|ap| ap.index != index);
                             }
-                            t.downloaded = self.downloaded_left().0;
-                            t.piece_bitfield = self.piece_bitfield.clone();
-                            t.active_pieces = self
-                                .pieces
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, p)| p.is_active())
-                                .map(|(p, piece)| PieceProgress {
-                                    index: p,
-                                    block_bitfield: piece.to_bitfield(),
-                                    num_verification_failures: piece.num_verification_failures(),
-                                })
-                                .collect();
-                        }
-                    });
+                        });
+                    } else {
+                        self.progress_tx.send_modify(|p| {
+                            if let Some(t) = p.transfer.as_mut() {
+                                if let Some(active_piece) =
+                                    t.active_pieces.iter_mut().find(|ap| ap.index == index)
+                                {
+                                    active_piece.block_bitfield = self.pieces[index].to_bitfield();
+                                    active_piece.num_verification_failures =
+                                        self.pieces[index].num_verification_failures();
+                                } else {
+                                    t.active_pieces.push(PieceProgress {
+                                        index,
+                                        block_bitfield: self.pieces[index].to_bitfield(),
+                                        num_verification_failures: self.pieces[index]
+                                            .num_verification_failures(),
+                                    });
+                                }
+                            }
+                        });
+                    }
                 }
             }
 
@@ -585,14 +602,14 @@ impl Transfer {
 
         let target_connection = &self.connections[target_peer_id];
         // Connection already has a piece so keep it if still available
-        if let Some(cursor) = target_connection.piece_cursor
+        if let Some(cursor) = target_connection.piece_cursor()
             && self.pieces[cursor].is_available()
         {
             return Some(cursor);
         }
         // Check if other connections are already working on a piece that is available
         for con in self.connections.values() {
-            if let Some(cursor) = con.piece_cursor
+            if let Some(cursor) = con.piece_cursor()
                 && self.pieces[cursor].is_available()
                 && target_connection.has_piece(cursor)
             {
@@ -671,7 +688,7 @@ impl Transfer {
                     Some(cursor) => {
                         self.connections
                             .entry(peer_id)
-                            .and_modify(|p| p.piece_cursor = Some(cursor));
+                            .and_modify(|p| p.set_piece_cursor(Some(cursor)));
                         if let Some(b) = self.pieces[cursor].find_available_block(&peer_id) {
                             self.request_block(&peer_id, cursor, b).await?;
                             self.pieces[cursor].download(b, peer_id);
@@ -682,7 +699,7 @@ impl Transfer {
                     None => {
                         self.connections
                             .entry(peer_id)
-                            .and_modify(|c| c.piece_cursor = None);
+                            .and_modify(|c| c.set_piece_cursor(None));
                         break;
                     }
                 }
@@ -702,25 +719,6 @@ impl Transfer {
         let mut downloaded_this_second = 0;
         let mut uploaded_this_second = 0;
 
-        self.progress_tx.send_modify(|p| {
-            for (id, con) in &self.connections {
-                p.peers.entry(*id).and_modify(|peer| {
-                    peer.connection = Some(ConnectionProgress {
-                        down_speed: con.downloaded_this_second(),
-                        up_speed: con.uploaded_this_second(),
-                        piece_bitfield: con.piece_bitfield().clone(),
-                        am_choking: con.am_choking(),
-                        am_interested: con.am_interested(),
-                        peer_choking: con.peer_choking(),
-                        peer_interested: con.peer_interested(),
-                        pipeline: con.max_requests(),
-                        piece_cursor: con.piece_cursor,
-                        timeout_rate: con.timeouts_this_second(),
-                        reject_rate: con.rejects_this_second(),
-                    })
-                });
-            }
-        });
         for con in self.connections.values_mut() {
             downloaded_this_second += con.downloaded_this_second();
             uploaded_this_second += con.uploaded_this_second();

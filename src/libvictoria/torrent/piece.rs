@@ -5,7 +5,7 @@ use tracing::{debug, info_span, warn};
 use crate::libvictoria::{bitfield::Bitfield, timer::Timer, types::*};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
-const REJECTION_TIMEOUT: Duration = Duration::from_secs(5);
+const REJECTION_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 enum BlockState {

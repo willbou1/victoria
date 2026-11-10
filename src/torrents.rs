@@ -396,7 +396,7 @@ pub async fn run_torrents(torrent_uris: &[String]) -> Result<()> {
                     .collect::<Vec<_>>()
                     .join("\r\n");
 
-                let fill = height.saturating_sub(frame.lines().count() as u16);
+                let fill = height.saturating_sub((table.num_row() + 5) as u16);
                 for l in 0..fill {
                     frame.extend(std::iter::repeat_n(' ', width.into()));
                     if l < fill - 1 {

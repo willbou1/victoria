@@ -143,7 +143,7 @@ impl RoutingTable {
             .map(|m| {
                 (
                     m,
-                    (8 - self.buckets[m as usize].len()) + rand::rng().random_range(0..16),
+                    (8 - self.buckets[m as usize].len()) + rand::rng().random_range(0..18),
                 )
             })
             .collect();

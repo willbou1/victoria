@@ -223,6 +223,10 @@ where
         }
     }
 
+    pub fn num_row(&self) -> usize {
+        self.row
+    }
+
     fn render_color(&mut self, color: Color) {
         self.render.push_str(&SetForegroundColor(color).to_string());
     }

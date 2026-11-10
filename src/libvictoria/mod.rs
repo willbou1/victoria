@@ -5,6 +5,7 @@ mod metainfo;
 mod proto;
 mod timer;
 mod tracker;
+mod signal;
 
 pub mod bitfield;
 pub mod dht;

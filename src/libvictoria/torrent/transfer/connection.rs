@@ -1,28 +1,37 @@
 use anyhow::{Result, ensure};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
-use crate::libvictoria::{bitfield::Bitfield, proto::bit_torrent::Message, types::*};
+use crate::libvictoria::{
+    bitfield::Bitfield,
+    proto::bit_torrent::Message,
+    signal::AsymmetricEMA,
+    torrent::control::{ConnectionProgress, Progress},
+    types::*,
+};
 
 const UPLOAD_LIMIT: usize = 32 * 1024; // b/s per peer
 
-const TIMEOUTS_BOOST_ALPHA: f64 = 0.4;
-const TIMEOUTS_THROTTLE_ALPHA: f64 = 1.0;
+const TIMEOUTS_BOOST_TAU: Duration = Duration::from_millis(1250);
+const TIMEOUTS_THROTTLE_TAU: Duration = Duration::from_secs(5);
 
-const DEFAULT_MAX_REQUESTS: usize = 2;
-const MIN_MAX_REQUESTS: usize = 1;
-const MAX_MAX_REQUESTS: usize = 200;
-const MAX_REQUESTS_STEP: usize = 2;
+const DEFAULT_PIPELINE: usize = 20;
+const MIN_PIPELINE: usize = 2;
+const DEFAULT_MAX_PIPELINE: usize = 200;
+const PIPELINE_STEP: usize = 2;
+const PIPELINE_THROTTLE_FACTOR: f32 = 0.8;
 
 pub struct Connection {
     id: PeerId,
 
     pub supports_fast: bool,
-    pub piece_cursor: Option<usize>,
+    piece_cursor: Option<usize>,
     tx: mpsc::Sender<Message>,
+    progress_tx: watch::Sender<Progress>,
 
     sent_requests: usize,
-    max_requests: usize,
+    pipeline: usize,
+    max_pipeline: usize,
 
     am_choking: bool,
     am_interested: bool,
@@ -39,23 +48,26 @@ pub struct Connection {
     rejects_this_second: usize,
     timeouts_this_second: usize,
 
-    timeouts_ema: f64,
+    timeouts_ema: AsymmetricEMA,
 }
 
 impl Connection {
     pub fn new(
         id: PeerId,
         tx: mpsc::Sender<Message>,
+        progress_tx: watch::Sender<Progress>,
         num_pieces: usize,
         supports_fast: bool,
     ) -> Self {
-        Self {
+        let con = Self {
             id,
             supports_fast,
             sent_requests: 0,
             piece_cursor: None,
             tx,
-            max_requests: DEFAULT_MAX_REQUESTS,
+            progress_tx,
+            max_pipeline: DEFAULT_MAX_PIPELINE,
+            pipeline: DEFAULT_PIPELINE,
 
             am_choking: true,
             am_interested: false,
@@ -71,32 +83,63 @@ impl Connection {
             rejects_this_second: 0,
             timeouts_this_second: 0,
 
-            timeouts_ema: 0.,
-        }
+            timeouts_ema: AsymmetricEMA::new(
+                Duration::from_secs(1),
+                TIMEOUTS_BOOST_TAU,
+                TIMEOUTS_THROTTLE_TAU,
+                None,
+            ),
+        };
+        con.init_progress();
+        con
+    }
+
+    fn init_progress(&self) {
+        self.progress_tx.send_modify(|p| {
+            p.peers.entry(self.id).and_modify(|peer| {
+                peer.connection = Some(ConnectionProgress {
+                    down_speed: self.downloaded_this_second(),
+                    up_speed: self.uploaded_this_second(),
+                    piece_bitfield: self.piece_bitfield().clone(),
+                    am_choking: self.am_choking(),
+                    am_interested: self.am_interested(),
+                    peer_choking: self.peer_choking(),
+                    peer_interested: self.peer_interested(),
+                    pipeline: self.pipeline,
+                    max_pipeline: self.max_pipeline,
+                    piece_cursor: self.piece_cursor,
+                    timeout_rate: self.timeouts_this_second,
+                    reject_rate: self.rejects_this_second,
+                })
+            });
+        });
+    }
+
+    fn notify(&self, f: impl Fn(&mut ConnectionProgress)) {
+        self.progress_tx.send_modify(|p| {
+            p.peers
+                .get_mut(&self.id)
+                .and_then(|p| p.connection.as_mut())
+                .map(|c| f(c));
+        });
     }
 
     pub fn can_request(&self) -> bool {
-        self.sent_requests < self.max_requests && !self.peer_choking
+        self.sent_requests < self.pipeline && !self.peer_choking
     }
 
     pub fn can_upload(&self) -> bool {
         self.uploaded_this_second < UPLOAD_LIMIT && !self.am_choking
     }
 
+    pub fn piece_cursor(&self) -> Option<usize> {
+        self.piece_cursor
+    }
     pub fn uploaded_this_second(&self) -> usize {
         self.uploaded_this_second
     }
     pub fn downloaded_this_second(&self) -> usize {
         self.downloaded_this_second
-    }
-    pub fn timeouts_this_second(&self) -> usize {
-        self.timeouts_this_second
-    }
-    pub fn rejects_this_second(&self) -> usize {
-        self.rejects_this_second
-    }
-    pub fn max_requests(&self) -> usize {
-        self.max_requests
     }
     pub fn sent_requests(&self) -> usize {
         self.sent_requests
@@ -117,14 +160,23 @@ impl Connection {
         &self.piece_bitfield
     }
 
-    pub fn boost_max_requests(&mut self) {
-        self.max_requests = (self.max_requests + MAX_REQUESTS_STEP).min(MAX_MAX_REQUESTS);
+    pub fn set_piece_cursor(&mut self, piece_cursor: Option<usize>) {
+        self.piece_cursor = piece_cursor;
+        self.notify(|c| c.piece_cursor = self.piece_cursor);
     }
-    pub fn throttle_max_requests(&mut self) {
-        self.max_requests = (self.max_requests * 3) / 4;
-        if self.max_requests == 0 {
-            self.max_requests = MIN_MAX_REQUESTS;
-        }
+
+    pub fn set_max_pipeline(&mut self, max_pipeline: Option<usize>) {
+        self.max_pipeline = max_pipeline.unwrap_or(DEFAULT_MAX_PIPELINE);
+        self.notify(|c| c.max_pipeline = self.max_pipeline);
+    }
+    pub fn boost_pipeline(&mut self) {
+        self.pipeline = (self.pipeline + PIPELINE_STEP).min(self.max_pipeline);
+        self.notify(|c| c.pipeline = self.pipeline);
+    }
+    pub fn throttle_pipeline(&mut self) {
+        self.pipeline = (self.pipeline as f32 * PIPELINE_THROTTLE_FACTOR) as usize;
+        self.pipeline = self.pipeline.max(MIN_PIPELINE);
+        self.notify(|c| c.pipeline = self.pipeline);
     }
 
     pub fn sub_sent_requests(&mut self, count: usize) {
@@ -137,11 +189,13 @@ impl Connection {
     pub async fn set_am_choking(&mut self, choking: bool) {
         self.am_choking = choking;
         self.send(Message::Choked(choking)).await;
+        self.notify(|c| c.am_choking = choking);
     }
 
     pub async fn set_am_interested(&mut self, interested: bool) {
         self.am_interested = interested;
         self.send(Message::Interested(interested)).await;
+        self.notify(|c| c.am_interested = interested);
     }
 
     pub fn set_peer_choking(&mut self, choking: bool) {
@@ -152,10 +206,12 @@ impl Connection {
                 self.reset_sent_requests();
             }
         }
+        self.notify(|c| c.peer_choking = choking);
     }
 
     pub fn set_peer_interested(&mut self, interested: bool) {
         self.peer_interested = interested;
+        self.notify(|c| c.peer_interested = interested);
     }
 
     pub fn set_bitfield(&mut self, bitfield: Bitfield) -> Result<()> {
@@ -166,19 +222,23 @@ impl Connection {
             bitfield.num_bytes()
         );
         self.piece_bitfield.set_bytes(bitfield.as_bytes());
+        self.notify(|c| c.piece_bitfield = self.piece_bitfield.clone());
         Ok(())
     }
     pub fn has_piece(&self, index: usize) -> bool {
         self.piece_bitfield.is_set(index)
     }
     pub fn set_piece(&mut self, index: usize) {
-        self.piece_bitfield.set(index)
+        self.piece_bitfield.set(index);
+        self.notify(|c| c.piece_bitfield.set(index));
     }
     pub fn set_pieces(&mut self) {
         self.piece_bitfield.fill(true);
+        self.notify(|c| c.piece_bitfield.fill(true));
     }
     pub fn unset_pieces(&mut self) {
         self.piece_bitfield.fill(false);
+        self.notify(|c| c.piece_bitfield.fill(false));
     }
 
     pub fn reject(&mut self) {
@@ -233,25 +293,25 @@ impl Connection {
     }
 
     fn control_congestion(&mut self) {
-        let alpha = if self.timeouts_this_second as f64 > self.timeouts_ema {
-            TIMEOUTS_BOOST_ALPHA
-        } else {
-            TIMEOUTS_THROTTLE_ALPHA
-        };
-        self.timeouts_ema =
-            alpha * self.timeouts_this_second as f64 + (1. - alpha) * self.timeouts_ema;
+        self.timeouts_ema.update(self.timeouts_this_second as f64);
 
-        if self.timeouts_ema >= 1. {
+        if self.timeouts_ema.value() >= 1. {
             if !self.peer_choking {
-                self.throttle_max_requests();
+                self.throttle_pipeline();
             }
         } else if self.downloaded_this_second != 0 {
-            self.boost_max_requests();
+            self.boost_pipeline();
         }
     }
 
     pub fn reset_stats(&mut self) {
         self.control_congestion();
+        self.notify(|c| {
+            c.timeout_rate = self.timeouts_this_second;
+            c.reject_rate = self.rejects_this_second;
+            c.down_speed = self.downloaded_this_second;
+            c.up_speed = self.uploaded_this_second;
+        });
 
         self.uploaded_this_second = 0;
         self.downloaded_this_second = 0;
@@ -260,5 +320,15 @@ impl Connection {
         self.chokes_this_second = 0;
         self.rejects_this_second = 0;
         self.timeouts_this_second = 0;
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        self.progress_tx.send_modify(|p| {
+            p.peers
+                .entry(self.id)
+                .and_modify(|peer| peer.connection = None);
+        });
     }
 }

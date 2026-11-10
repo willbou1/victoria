@@ -31,6 +31,7 @@ pub struct ConnectionProgress {
     pub peer_choking: bool,
     pub peer_interested: bool,
     pub pipeline: usize,
+    pub max_pipeline: usize,
     pub piece_cursor: Option<usize>,
     pub timeout_rate: usize,
     pub reject_rate: usize,

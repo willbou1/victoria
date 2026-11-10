@@ -4,6 +4,7 @@ mod piece;
 mod transfer;
 
 use anyhow::{Result, anyhow};
+use rand::seq::SliceRandom;
 use sha1::{Digest, Sha1};
 use std::{collections::HashMap, path::Path, path::PathBuf, time::Duration};
 use tokio::{fs, io::AsyncWriteExt, select, sync::mpsc, sync::watch};
@@ -445,7 +446,7 @@ impl Torrent {
                     .entry(peer_id)
                     .and_modify(|p| p.timeout_metadata(count));
             }
-            self.dispatch_metadata_request().await?;
+            self.dispatch_metadata_request().await;
         }
 
         let mut reconnect = Vec::new();
@@ -545,21 +546,30 @@ impl Torrent {
         }
     }
 
-    async fn dispatch_metadata_request(&mut self) -> Result<()> {
-        for (peer_id, peer) in &mut self.peers {
-            while peer.can_request_metadata() {
-                if let Some(index) = self.metadata.find_available_block(&peer_id) {
-                    let span = info_span!("peer", id = %peer_id);
-                    let _enter = span.enter();
-                    debug!("Requested metadata {index}");
-                    self.metadata.download(index, *peer_id);
-                    peer.request_metadata(index).await;
-                } else {
-                    break;
+    async fn dispatch_metadata_request(&mut self) {
+        let mut peer_ids: Vec<_> = self.peers.keys().copied().collect();
+        loop {
+            peer_ids.shuffle(&mut rand::rng());
+            let mut requested = false;
+            for peer_id in &peer_ids {
+                let peer = self.peers.get_mut(peer_id).unwrap();
+                if !peer.can_request_metadata() {
+                    continue;
                 }
+                let Some(index) = self.metadata.find_available_block(peer_id) else {
+                    return;
+                };
+                let span = info_span!("peer", id = %peer_id);
+                let _enter = span.enter();
+                debug!("Requested metadata {index}");
+                self.metadata.download(index, *peer_id);
+                peer.request_metadata(index).await;
+                requested = true;
+            }
+            if !requested {
+                break;
             }
         }
-        Ok(())
     }
 
     async fn handle_metadata_message(
@@ -634,7 +644,7 @@ impl Torrent {
                         self.transfer = Some(transfer);
                         self.write_metainfo().await?;
                     } else {
-                        self.dispatch_metadata_request().await?;
+                        self.dispatch_metadata_request().await;
                     }
                     self.progress_tx.send_modify(|p| {
                         p.metadata_bitfield = self.metadata.to_bitfield();
@@ -651,7 +661,7 @@ impl Torrent {
                         self.peers
                             .entry(*peer_id)
                             .and_modify(|p| p.reject_metadata());
-                        self.dispatch_metadata_request().await?;
+                        self.dispatch_metadata_request().await;
                     }
                 }
                 debug!("Got metadata reject {index}");
@@ -712,13 +722,17 @@ impl Torrent {
                             peer.receive_extension_handshake(client, max_requests, extensions);
                             if let Some(metadata_size) = metadata_size
                                 && self.transfer.is_none()
-                                && metadata_size / (16 * 1024) > self.metadata.num_blocks()
+                                && metadata_size.div_ceil(METADATA_BLOCK_SIZE)
+                                    > self.metadata.num_blocks()
                             {
-                                warn!("Resetting metadata");
+                                info!("Resetting metadata to {metadata_size}");
                                 self.metadata.set_length_and_reset(metadata_size);
                                 drop(guard);
-                                self.dispatch_metadata_request().await?;
+                                self.dispatch_metadata_request().await;
                             }
+                            self.transfer
+                                .as_mut()
+                                .map(|t| t.set_max_pipeline(&peer_id, max_requests));
                         }
 
                         Message::PEX(PEXMessage { added, dropped }) => {

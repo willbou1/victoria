@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 

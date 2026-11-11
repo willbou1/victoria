@@ -12,7 +12,7 @@ use tracing_subscriber::{
     EnvFilter, Layer, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
-use torrents::run_torrents;
+use torrents::MainUI;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -56,7 +56,8 @@ async fn main() -> Result<()> {
 
     let args: Vec<String> = env::args().collect();
 
-    run_torrents(&args[1..]).await?;
+    let ui = MainUI::new().await?;
+    ui.run(&args[1..]).await?;
 
     Ok(())
 }

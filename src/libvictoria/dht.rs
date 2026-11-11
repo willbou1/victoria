@@ -1,6 +1,6 @@
 use anyhow::Result;
 use bencodedit::{BencodeError, BencodeErrorKind};
-use rand::{RngExt, seq::SliceRandom};
+use rand::RngExt;
 use std::{
     array,
     collections::{HashMap, HashSet},
@@ -202,15 +202,15 @@ pub struct DHTManager {
     rx: mpsc::Receiver<DHTEvent>,
     pub tx: mpsc::Sender<DHTEvent>,
     pub info_rx: watch::Receiver<DHTInfo>,
+    pub cancel: CancellationToken,
     info_tx: watch::Sender<DHTInfo>,
-    cancellation_token: CancellationToken,
 
     info_hashes: HashMap<Hash, InfoHashKnowledge>,
     discovered_ids: HashMap<NodeId, HashSet<NodeId>>,
 }
 
 impl DHTManager {
-    pub async fn new(cancellation_token: CancellationToken) -> Result<Self> {
+    pub async fn new() -> Result<Self> {
         let (tx, rx) = mpsc::channel(100);
         let (info_tx, info_rx) = watch::channel(DHTInfo::default());
         let node_id = NodeId::random();
@@ -220,9 +220,9 @@ impl DHTManager {
             id: node_id,
             tx,
             rx,
+            cancel: CancellationToken::new(),
             info_tx,
             info_rx,
-            cancellation_token,
 
             info_hashes: HashMap::new(),
             discovered_ids: HashMap::new(),
@@ -240,7 +240,7 @@ impl DHTManager {
                     _ = maintenance_interval.tick() => {
                         self.maintain().await?;
                     },
-                    _ = self.cancellation_token.cancelled() => {
+                    _ = self.cancel.cancelled() => {
                         break;
                     },
                     message = self.dht.receive() => match message {
@@ -256,7 +256,7 @@ impl DHTManager {
                     },
                     event = self.rx.recv() => match event {
                         Some(event) => {
-                            let cancel = self.cancellation_token.clone();
+                            let cancel = self.cancel.clone();
                             select! {
                                 _ = cancel.cancelled() => break,
                                 result = self.handle_event(event) => result?,
@@ -435,7 +435,6 @@ impl DHTManager {
                         .await;
                 }
             }
-            _ => (),
         }
         Ok(())
     }

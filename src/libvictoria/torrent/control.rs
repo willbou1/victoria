@@ -12,6 +12,7 @@ pub struct Config {
     pub client_id: PeerId,
     pub download_path: PathBuf,
     pub data_path: PathBuf,
+    pub bit_torrent_port: u16,
 }
 
 #[derive(Debug)]
@@ -226,6 +227,7 @@ pub struct Progress {
     pub num_peers: usize,
     pub num_connected_peers: usize,
     pub display_name: String,
+    pub info_hash: Hash,
     pub metadata_bitfield: Bitfield,
     pub transfer: Option<TransferProgress>,
     pub peers: HashMap<PeerId, PeerProgress>,
@@ -233,10 +235,11 @@ pub struct Progress {
 }
 
 impl Progress {
-    pub(crate) fn new(display_name: String, metadata_bitfield: Bitfield) -> Self {
+    pub(crate) fn new(display_name: String, info_hash: Hash, metadata_bitfield: Bitfield) -> Self {
         Self {
             sequential: false,
             display_name,
+            info_hash,
             num_peers: 0,
             num_connected_peers: 0,
             num_discovery_attempts: 0,

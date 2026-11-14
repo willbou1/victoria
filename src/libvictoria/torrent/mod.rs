@@ -81,7 +81,7 @@ pub struct Torrent {
     dht_tx: mpsc::Sender<DHTEvent>,
     tracker_tx: watch::Sender<tracker::Progress>,
     tracker_event_tx: mpsc::Sender<TrackerEvent>,
-    info_hash: Hash,
+    pub info_hash: Hash,
     display_name: String,
     span: Span,
     discovery_attemps: Vec<DiscoveryAttempt>,
@@ -266,6 +266,7 @@ impl Torrent {
 
         let (progress_tx, progress_rx) = watch::channel(Progress::new(
             display_name.clone(),
+            info_hash.clone(),
             metadata_piece.to_bitfield(),
         ));
         let (command_tx, command_rx) = mpsc::channel(10);
@@ -282,7 +283,7 @@ impl Torrent {
             tracker_rx,
             progress_tx.clone(),
             tracker_event_rx,
-            config_rx.borrow().client_id,
+            config_rx.clone(),
             info_hash,
             metainfo.announces.clone(),
         );
@@ -490,7 +491,7 @@ impl Torrent {
             })
             .spawn(
                 async move {
-                    match BitTorrent::handshake(&peer_info, &info_hash, &client_id).await {
+                    match BitTorrent::send_handshake(&peer_info, &info_hash, &client_id).await {
                         Ok(bit_torrent) => {
                             tx.send(Event::Connection(bit_torrent, peer_info, known_id))
                                 .await

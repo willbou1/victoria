@@ -1,4 +1,5 @@
 pub mod state;
+pub mod histogram;
 
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 

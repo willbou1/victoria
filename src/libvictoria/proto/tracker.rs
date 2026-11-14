@@ -105,6 +105,7 @@ impl Default for Progress {
 
 pub async fn request_udp(
     url: &str,
+    bit_torrent_port: u16,
     client_id: &PeerId,
     info_hash: &Hash,
     progress: &Progress,
@@ -174,10 +175,10 @@ pub async fn request_udp(
     request[64..72].copy_from_slice(&(progress.left as i64).to_be_bytes());
     request[72..80].copy_from_slice(&(progress.uploaded as i64).to_be_bytes());
     request[80..84].copy_from_slice(&(progress.event.clone() as i32).to_be_bytes());
-    request[84..88].fill(0); // TODO fill ip
+    request[84..88].fill(0);
     rng().fill_bytes(&mut request[88..92]);
     request[92..96].copy_from_slice(&(-1i32).to_be_bytes()); // num_want
-    request[96..98].copy_from_slice(&6881u16.to_be_bytes()); // num_want
+    request[96..98].copy_from_slice(&bit_torrent_port.to_be_bytes());
 
     // announce response
     for n in 0..(MAX_ATTEMPTS + 1) {
@@ -217,6 +218,7 @@ pub async fn request_udp(
 
 pub async fn request_http(
     url: &str,
+    bit_torrent_port: u16,
     client_id: &PeerId,
     info_hash: &Hash,
     progress: &Progress,
@@ -224,7 +226,7 @@ pub async fn request_http(
     let mut url = Url::parse(&url)?;
     {
         let mut query = url.query_pairs_mut();
-        query.append_pair("port", "6881");
+        query.append_pair("port", &bit_torrent_port.to_string());
         query.append_pair("uploaded", &progress.uploaded.to_string());
         query.append_pair("downloaded", &progress.downloaded.to_string());
         query.append_pair("left", &progress.left.to_string());

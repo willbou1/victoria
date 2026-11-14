@@ -20,11 +20,11 @@ pub enum TrackerEvent {
 pub struct Trackers {
     urls: Vec<Vec<String>>,
     info_hash: Hash,
-    client_id: PeerId,
     tx: mpsc::Sender<torrent::Event>,
     progress_rx: watch::Receiver<tracker::Progress>,
     progress_tx: watch::Sender<Progress>,
     rx: mpsc::Receiver<TrackerEvent>,
+    config_rx: watch::Receiver<Config>,
 
     pub interval: Option<u64>,
     pub min_interval: Option<u64>,
@@ -41,7 +41,7 @@ impl Trackers {
         progress_rx: watch::Receiver<tracker::Progress>,
         progress_tx: watch::Sender<Progress>,
         rx: mpsc::Receiver<TrackerEvent>,
-        client_id: PeerId,
+        config_rx: watch::Receiver<Config>,
         info_hash: Hash,
         mut urls: Vec<Vec<String>>,
     ) -> Self {
@@ -59,7 +59,7 @@ impl Trackers {
         Self {
             urls,
             info_hash,
-            client_id,
+            config_rx,
             tx,
             rx,
             progress_rx,
@@ -169,19 +169,20 @@ impl Trackers {
                     });
                 });
 
-                let client_id = self.client_id.clone();
+                let client_id = self.config_rx.borrow().client_id;
+                let bit_torrent_port = self.config_rx.borrow().bit_torrent_port;
                 let info_hash = self.info_hash.clone();
                 let progress = self.progress.clone();
 
                 tasks.spawn(async move {
                     let result = match url.split_once("://").map(|(scheme, _)| scheme) {
                         Some("http" | "https") => {
-                            request_http(&url, &client_id, &info_hash, &progress).await
+                            request_http(&url, bit_torrent_port, &client_id, &info_hash, &progress).await
                         }
                         Some("udp") => {
                             match tokio::time::timeout(
                                 Duration::from_secs(10),
-                                request_udp(&url, &client_id, &info_hash, &progress),
+                                request_udp(&url, bit_torrent_port, &client_id, &info_hash, &progress),
                             )
                             .await
                             {

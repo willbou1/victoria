@@ -9,6 +9,7 @@ use tokio::{
     net::{
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
+        unix::SocketAddr,
     },
     select,
     sync::mpsc,
@@ -21,9 +22,6 @@ use super::{metadata::MetadataMessage, pex::PEXMessage};
 use crate::libvictoria::{bitfield::Bitfield, torrent::Event, types::*};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-
-const PEX_ID: u8 = 1;
-const METADATA_ID: u8 = 2;
 
 #[derive(Debug)]
 pub enum Message {
@@ -154,20 +152,112 @@ impl Message {
     }
 }
 
+struct Handshake {
+    advertise_extensions: bool,
+    advertise_fast: bool,
+    advertise_dht: bool,
+    info_hash: Hash,
+    peer_id: PeerId,
+}
+
+impl Handshake {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        ensure!(bytes.len() == 68, "expected handshake to have 68 bytes");
+        ensure!(bytes[0] == 19, "expected handshake to start with byte 19");
+        ensure!(
+            &bytes[1..20] == b"BitTorrent protocol",
+            "expected handshake to have 'BitTorrent protocol' signature"
+        );
+        Ok(Self {
+            advertise_fast: (bytes[20 + 7] & 0x04) > 0,
+            advertise_extensions: (bytes[20 + 5] & 0x10) > 0,
+            advertise_dht: (bytes[20 + 7] & 0x01) > 0,
+            info_hash: bytes[28..48].try_into()?,
+            peer_id: bytes[48..68].try_into()?,
+        })
+    }
+
+    pub fn into_bytes(self) -> Vec<u8> {
+        let mut handshake = vec![0u8; 68];
+        handshake[0] = 19;
+        handshake[1..20].copy_from_slice(b"BitTorrent protocol");
+        handshake[20 + 5] |= 0x10;
+        handshake[20 + 7] |= 0x04;
+        handshake[20 + 7] |= 0x01;
+        handshake[28..48].copy_from_slice(self.info_hash.as_ref());
+        handshake[48..68].copy_from_slice(self.peer_id.as_ref());
+        handshake
+    }
+}
+
 type RequestKey = (usize, usize, usize);
 type RequestTimes = Arc<tokio::sync::Mutex<HashMap<RequestKey, Instant>>>;
 type ExtensionMapping = Arc<tokio::sync::Mutex<HashMap<String, u8>>>;
 
+#[derive(Debug)]
 pub struct BitTorrent {
     pub stream: TcpStream,
     pub name: String,
     pub id: PeerId,
+    pub info_hash: Hash,
     pub supports_fast: bool,
     pub supports_dht: bool,
 }
 
 impl BitTorrent {
-    pub async fn handshake(
+    const PEX_ID: u8 = 1;
+    const METADATA_ID: u8 = 2;
+
+    pub async fn receive_handshake(
+        peer_info: &PeerInfo,
+        known_info_hashes: &[Hash],
+        local_id: &PeerId,
+        mut stream: TcpStream,
+    ) -> Result<Self> {
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+            let mut handshake = [0u8; 68];
+            let name = format!("{peer_info}");
+
+            stream.read_exact(&mut handshake).await?;
+            let query = Handshake::from_bytes(&handshake)?;
+            trace!(peer = %name, "Received handshake");
+            ensure!(query.peer_id != *local_id, "peer connected to itself");
+            ensure!(
+                known_info_hashes.contains(&query.info_hash),
+                "peer connection for unknown info hash"
+            );
+
+            stream
+                .write_all(
+                    &Handshake {
+                        advertise_dht: true,
+                        advertise_extensions: true,
+                        advertise_fast: true,
+                        info_hash: query.info_hash,
+                        peer_id: *local_id,
+                    }
+                    .into_bytes(),
+                )
+                .await?;
+            trace!(peer = %name, "Sent handshake");
+
+            Ok(Self {
+                stream,
+                name,
+                id: query.peer_id,
+                info_hash: query.info_hash,
+                supports_fast: query.advertise_fast,
+                supports_dht: query.advertise_dht,
+            })
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow!("Exceeded handshake timeout")),
+        }
+    }
+
+    pub async fn send_handshake(
         peer_info: &PeerInfo,
         info_hash: &Hash,
         local_id: &PeerId,
@@ -182,34 +272,29 @@ impl BitTorrent {
             let mut stream = TcpStream::connect(addrs.iter().next().unwrap()).await?;
             trace!(peer = %name, "Connected");
 
-            // Send the handshake
-            handshake[0] = 19;
-            handshake[1..20].copy_from_slice(b"BitTorrent protocol");
-            handshake[20 + 5] |= 0x10; // Advertise extensions
-            handshake[20 + 7] |= 0x04; // Advertise fast
-            handshake[20 + 7] |= 0x01; // Avertise DHT
-            handshake[28..48].copy_from_slice(info_hash.as_ref());
-            handshake[48..68].copy_from_slice(local_id.as_ref());
-            stream.write_all(&handshake).await?;
+            stream
+                .write_all(
+                    &Handshake {
+                        advertise_dht: true,
+                        advertise_extensions: true,
+                        advertise_fast: true,
+                        info_hash: *info_hash,
+                        peer_id: *local_id,
+                    }
+                    .into_bytes(),
+                )
+                .await?;
             trace!(peer = %name, "Sent handshake");
 
-            // Receive the handshake response and verify it is right
             stream.read_exact(&mut handshake).await?;
+            let response = Handshake::from_bytes(&handshake)?;
             ensure!(
-                handshake[0] == 19,
-                "expected handshake response to start with 19"
-            );
-            ensure!(
-                &handshake[1..20] == b"BitTorrent protocol",
-                "expected handshake response to have 'BitTorrent protocol'"
-            );
-            ensure!(
-                &handshake[28..48] == info_hash.as_ref(),
+                &response.info_hash == info_hash,
                 "expected handshake response to have same info hash"
             );
             if let Some(peer_id) = peer_info.id {
                 ensure!(
-                    &handshake[48..68] == peer_id.as_ref(),
+                    response.peer_id == peer_id,
                     "expected handshake response to have right peer id"
                 );
             }
@@ -218,9 +303,10 @@ impl BitTorrent {
             Ok(Self {
                 stream,
                 name,
-                id: PeerId(handshake[48..68].try_into()?),
-                supports_fast: handshake[20 + 7] & 0x04 > 0,
-                supports_dht: handshake[20 + 7] & 0x01 > 0,
+                id: response.peer_id,
+                info_hash: *info_hash,
+                supports_fast: response.advertise_fast,
+                supports_dht: response.advertise_dht,
             })
         })
         .await
@@ -276,8 +362,8 @@ impl BitTorrent {
                 &name,
                 Message::ExtensionHandshake {
                     extensions: HashMap::from_iter(vec![
-                        (String::from("ut_pex"), PEX_ID),
-                        (String::from("ut_metadata"), METADATA_ID),
+                        (String::from("ut_pex"), Self::PEX_ID),
+                        (String::from("ut_metadata"), Self::METADATA_ID),
                     ]),
                     client: Some(format!("victoria/{}", env!("CARGO_PKG_VERSION"))),
                     // TODO respect this for other client
@@ -436,7 +522,11 @@ impl BitTorrent {
                 payload.push(*extensions.lock().await.get("ut_metadata").unwrap());
                 payload.extend(msg.into_bytes());
             }
-            Message::PEX { .. } => {}
+            Message::PEX(msg) => {
+                payload.push(20);
+                payload.push(*extensions.lock().await.get("ut_pex").unwrap());
+                payload.extend(msg.into_bytes());
+            }
         }
 
         let length = u32::try_from(payload.len())?;
@@ -622,10 +712,10 @@ impl BitTorrent {
                         }
                         msg
                     }
-                    PEX_ID => Message::PEX(
+                    Self::PEX_ID => Message::PEX(
                         PEXMessage::from_bytes(&payload[1..]).map_err(|e| anyhow!("{e}"))?,
                     ),
-                    METADATA_ID => Message::Metadata(
+                    Self::METADATA_ID => Message::Metadata(
                         MetadataMessage::from_bytes(&payload[1..]).map_err(|e| anyhow!("{e}"))?,
                     ),
                     _ => Message::UnsupportedExtension {

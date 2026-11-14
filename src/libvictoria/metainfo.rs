@@ -74,7 +74,7 @@ impl Metadata {
                 .required(b"pieces")?
                 .as_bytes()?
                 .chunks(20)
-                .map(|chunk| Hash(chunk.try_into().unwrap()))
+                .map(|chunk| chunk.try_into().unwrap())
                 .collect();
 
             let num_pieces = pieces.len();

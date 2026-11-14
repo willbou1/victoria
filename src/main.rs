@@ -3,7 +3,7 @@
 
 mod libvictoria;
 mod rows;
-mod torrents;
+mod main_ui;
 mod util;
 
 use anyhow::Result;
@@ -12,7 +12,7 @@ use tracing_subscriber::{
     EnvFilter, Layer, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
 };
 
-use torrents::MainUI;
+use main_ui::MainUI;
 
 #[tokio::main]
 async fn main() -> Result<()> {

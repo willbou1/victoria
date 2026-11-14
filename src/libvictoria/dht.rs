@@ -17,7 +17,7 @@ use super::{
     proto::dht::*,
     torrent::{
         Event,
-        control::{DHTInfo, DHTNodeInfo},
+        control::{Config, DHTInfo, DHTNodeInfo},
     },
     types::*,
 };
@@ -202,7 +202,8 @@ pub struct DHTManager {
     rx: mpsc::Receiver<DHTEvent>,
     pub tx: mpsc::Sender<DHTEvent>,
     pub info_rx: watch::Receiver<DHTInfo>,
-    pub cancel: CancellationToken,
+    config_rx: watch::Receiver<Config>,
+    cancel: CancellationToken,
     info_tx: watch::Sender<DHTInfo>,
 
     info_hashes: HashMap<Hash, InfoHashKnowledge>,
@@ -210,7 +211,10 @@ pub struct DHTManager {
 }
 
 impl DHTManager {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(
+        cancel: CancellationToken,
+        config_rx: watch::Receiver<Config>,
+    ) -> Result<Self> {
         let (tx, rx) = mpsc::channel(100);
         let (info_tx, info_rx) = watch::channel(DHTInfo::default());
         let node_id = NodeId::random();
@@ -220,9 +224,10 @@ impl DHTManager {
             id: node_id,
             tx,
             rx,
-            cancel: CancellationToken::new(),
+            cancel,
             info_tx,
             info_rx,
+            config_rx,
 
             info_hashes: HashMap::new(),
             discovered_ids: HashMap::new(),

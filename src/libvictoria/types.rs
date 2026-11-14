@@ -36,6 +36,13 @@ macro_rules! impl_id {
                 id.0
             }
         }
+        impl TryFrom<&[u8]> for $ty {
+            type Error = std::array::TryFromSliceError;
+
+            fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+                Ok(Self(bytes.try_into()?))
+            }
+        }
         impl fmt::Display for $ty {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{}", self.0.map(|b| format!("{b:02x}")).join(""))

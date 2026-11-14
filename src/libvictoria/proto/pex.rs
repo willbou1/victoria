@@ -66,7 +66,7 @@ impl PEXMessage {
         .context("while parsing PEX message")
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn into_bytes(self) -> Vec<u8> {
         use BencodeValue::*;
         let mut added4 = Vec::new();
         let mut added6 = Vec::new();

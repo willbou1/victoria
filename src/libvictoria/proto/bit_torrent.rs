@@ -31,7 +31,7 @@ pub enum Message {
     Interested(bool),
     Bitfield(Bitfield),
     Have {
-        index: usize,
+        piece_index: usize,
     },
     Request {
         index: usize,
@@ -46,7 +46,7 @@ pub enum Message {
     Piece {
         index: usize,
         begin: usize,
-        piece: Vec<u8>,
+        data: Vec<u8>,
         response_time: Option<Duration>,
     },
 
@@ -436,7 +436,7 @@ impl BitTorrent {
                 payload.push(5);
                 payload.extend(bitfield.as_bytes());
             }
-            Message::Have { index } => {
+            Message::Have { piece_index: index } => {
                 payload.push(4);
                 payload.extend((index as u32).to_be_bytes());
             }
@@ -465,7 +465,7 @@ impl BitTorrent {
             Message::Piece {
                 index,
                 begin,
-                piece,
+                data: piece,
                 ..
             } => {
                 payload.push(7);
@@ -586,7 +586,7 @@ impl BitTorrent {
                 Self::check_length(1 + 4, message_length, false, "Have")?;
                 reader.read_exact(&mut int_buf).await?;
                 let index = u32::from_be_bytes(int_buf) as usize;
-                Message::Have { index }
+                Message::Have { piece_index: index }
             }
             6 => {
                 // request
@@ -614,7 +614,7 @@ impl BitTorrent {
                 Message::Piece {
                     index,
                     begin,
-                    piece,
+                    data: piece,
                     response_time,
                 }
             }

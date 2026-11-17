@@ -70,6 +70,14 @@ pub(crate) enum Event {
 
     Tracker(Vec<PeerInfo>),
     DHT(Vec<EndpointV4>),
+
+    Stop,
+    Pause,
+    Resume,
+    Delete,
+    ToggleSequential,
+    SetPriority(usize, FilePriority),
+    ReloadTrackers,
 }
 
 pub struct Torrent {
@@ -77,9 +85,9 @@ pub struct Torrent {
 
     peers: HashMap<PeerId, Peer>,
     rx: mpsc::Receiver<Event>,
-    peer_tx: mpsc::Sender<Event>,
+    pub peer_tx: mpsc::Sender<Event>,
     dht_tx: mpsc::Sender<DHTEvent>,
-    tracker_tx: watch::Sender<tracker::Progress>,
+    tracker_progress_tx: watch::Sender<tracker::Progress>,
     tracker_event_tx: mpsc::Sender<TrackerEvent>,
     pub info_hash: Hash,
     display_name: String,
@@ -90,8 +98,6 @@ pub struct Torrent {
 
     metadata: Piece,
 
-    pub command_tx: mpsc::Sender<Command>,
-    command_rx: mpsc::Receiver<Command>,
     pub progress_rx: watch::Receiver<Progress>,
     progress_tx: watch::Sender<Progress>,
     config_rx: watch::Receiver<Config>,
@@ -269,18 +275,16 @@ impl Torrent {
             info_hash.clone(),
             metadata_piece.to_bitfield(),
         ));
-        let (command_tx, command_rx) = mpsc::channel(10);
 
         let (tracker_event_tx, tracker_event_rx) = mpsc::channel(10);
-        let (tracker_tx, tracker_rx) = watch::channel(tracker::Progress {
+        let (tracker_progress_tx, tracker_progress_rx) = watch::channel(tracker::Progress {
             downloaded: 0,
             uploaded: 0,
             left: 0,
-            event: tracker::Event::None,
         });
         let trackers = Trackers::new(
             tx.clone(),
-            tracker_rx,
+            tracker_progress_rx,
             progress_tx.clone(),
             tracker_event_rx,
             config_rx.clone(),
@@ -296,7 +300,8 @@ impl Torrent {
                 Transfer::new(
                     metadata,
                     info_hash,
-                    tracker_tx.clone(),
+                    tracker_progress_tx.clone(),
+                    tracker_event_tx.clone(),
                     progress_tx.clone(),
                     config_rx.clone(),
                 )
@@ -310,7 +315,7 @@ impl Torrent {
             display_name,
             peers: HashMap::new(),
             peer_tx: tx,
-            tracker_tx,
+            tracker_progress_tx,
             dht_tx,
             tracker_event_tx,
             metadata: metadata_piece,
@@ -324,8 +329,6 @@ impl Torrent {
             config_rx,
             progress_rx,
             progress_tx,
-            command_rx,
-            command_tx,
         })
     }
     async fn write_metainfo(&self) -> Result<()> {
@@ -351,7 +354,7 @@ impl Torrent {
         file.write_all(
             &self
                 .metainfo
-                .to_bytes(self.transfer.as_ref().map(|t| &t.metadata)),
+                .to_bytes(self.transfer.as_ref().map(|t| t.get_metadata())),
         )
         .await?;
         Ok(())
@@ -367,7 +370,21 @@ impl Torrent {
             loop {
                 select! {
                     event = self.rx.recv() => {
-                        self.handle_event(event.unwrap()).await?;
+                        match event {
+                            Some(Event::Stop) | None => {
+                                if let Some(transfer) = &mut self.transfer {
+                                    transfer.save_state().await?;
+                                }
+                                break;
+                            }
+                            Some(Event::Delete) => {
+                                let path = self.config_rx.borrow().data_path
+                                    .join(self.info_hash.to_string());
+                                fs::remove_dir_all(path).await?;
+                                break;
+                            }
+                            Some(event) => self.handle_event(event).await?,
+                        }
                     },
                     _ = autosave_interval.tick() => {
                         if let Some(transfer) = &mut self.transfer {
@@ -380,52 +397,12 @@ impl Torrent {
                         ).await;
                     },
                     _ = tick_interval.tick() => self.tick().await?,
-                    command = self.command_rx.recv() => {
-                        match command {
-                            Some(Command::Stop) | None => {
-                                if let Some(transfer) = &mut self.transfer {
-                                    transfer.save_state().await?;
-                                }
-                                break;
-                            }
-                            Some(Command::Delete) => {
-                                let path = self.config_rx.borrow().data_path
-                                    .join(self.info_hash.to_string());
-                                fs::remove_dir_all(path).await?;
-                                break;
-                            }
-                            Some(command) => self.handle_command(command).await?,
-                        }
-                    },
                 }
             }
             Ok(())
         }
         .instrument(span)
         .await
-    }
-
-    async fn handle_command(&mut self, command: Command) -> Result<()> {
-        match command {
-            Command::ToggleSequential => {
-                self.progress_tx
-                    .send_modify(|p| p.sequential = !p.sequential);
-            }
-            Command::ReloadTrackers => {
-                self.tracker_event_tx.send(TrackerEvent::Reload).await?;
-                let _ = self
-                    .dht_tx
-                    .send(DHTEvent::InfoHashRequest(
-                        self.info_hash,
-                        self.peer_tx.clone(),
-                    ))
-                    .await;
-            }
-            command => {
-                self.transfer.as_ref().map(|t| t.handle_command(command));
-            }
-        }
-        Ok(())
     }
 
     fn statistics(&mut self) {
@@ -620,7 +597,8 @@ impl Torrent {
                         let mut transfer = Transfer::new(
                             metadata,
                             self.info_hash,
-                            self.tracker_tx.clone(),
+                            self.tracker_progress_tx.clone(),
+                            self.tracker_event_tx.clone(),
                             self.progress_tx.clone(),
                             self.config_rx.clone(),
                         )
@@ -758,9 +736,9 @@ impl Torrent {
                             warn!("Got unsupported extension message {type_byte}")
                         }
 
-                        msg @ _ => {
+                        msg => {
                             if let Some(transfer) = &mut self.transfer {
-                                transfer.handle_event(&peer_id, msg).await?;
+                                transfer.handle_message(&peer_id, msg).await?;
                             } else {
                                 self.peers
                                     .get_mut(&peer_id)
@@ -867,11 +845,33 @@ impl Torrent {
                 }
             }
             Event::DHT(endpointsv4) => {
-                debug!("Tracker discovery");
+                debug!("DHT discovery");
                 for endpointv4 in endpointsv4 {
                     self.discover(&PeerInfo::from(endpointv4), DiscoveryMechanism::DHT);
                 }
             }
+
+            Event::ToggleSequential => {
+                self.progress_tx
+                    .send_modify(|p| p.sequential = !p.sequential);
+            }
+            Event::ReloadTrackers => {
+                self.tracker_event_tx.send(TrackerEvent::Reload).await?;
+                let _ = self
+                    .dht_tx
+                    .send(DHTEvent::InfoHashRequest(
+                        self.info_hash,
+                        self.peer_tx.clone(),
+                    ))
+                    .await;
+            }
+            Event::SetPriority(index, priority) => {
+                self.transfer
+                    .as_ref()
+                    .map(|t| t.set_file_priority(index, priority));
+            }
+
+            _ => (),
         }
 
         self.update_progress();

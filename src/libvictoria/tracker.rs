@@ -1,8 +1,10 @@
+use anyhow::Result;
 use rand::seq::SliceRandom;
 use std::{fmt, time::Duration};
 use tokio::{
     select,
-    sync::{mpsc, watch}, task::JoinSet,
+    sync::{mpsc, watch},
+    task::JoinSet,
 };
 use tracing::{Instrument, debug, error, info_span, trace};
 
@@ -15,6 +17,7 @@ use crate::libvictoria::{
 
 pub enum TrackerEvent {
     Reload,
+    Completed,
 }
 
 pub struct Trackers {
@@ -31,11 +34,12 @@ pub struct Trackers {
     pub seeders: Option<u64>,
     pub leechers: Option<u64>,
     pub peers: Vec<PeerInfo>,
-
-    progress: tracker::Progress,
 }
 
 impl Trackers {
+    const DEFAULT_INTERVAL_SECS: u64 = 60;
+    const DEFAULT_MIN_INTERVAL_SECS: u64 = 0;
+
     pub fn new(
         tx: mpsc::Sender<torrent::Event>,
         progress_rx: watch::Receiver<tracker::Progress>,
@@ -70,62 +74,50 @@ impl Trackers {
             seeders: None,
             leechers: None,
             peers: Vec::new(),
-
-            progress: tracker::Progress::default(),
         }
+    }
+
+    fn interval(&self) -> Duration {
+        Duration::from_secs(
+            self.interval.unwrap_or(
+                Self::DEFAULT_INTERVAL_SECS
+                    .max(self.min_interval.unwrap_or(Self::DEFAULT_MIN_INTERVAL_SECS)),
+            ),
+        )
     }
 
     pub async fn run(mut self) {
         let span = info_span!("trackers");
         let _enter = span.enter();
         async {
-            self.announce().await;
+            self.announce(tracker::Event::Started).await;
 
-            let mut sleep = Box::pin(tokio::time::sleep(Duration::from_secs(
-                self.interval
-                    .unwrap_or(60)
-                    .max(self.min_interval.unwrap_or(0)),
-            )));
+            let mut sleep = Box::pin(tokio::time::sleep(self.interval()));
             loop {
                 select!(
                     _ = &mut sleep => {
-                        self.announce().await;
-
-                        sleep.as_mut().reset(
-                            tokio::time::Instant::now()
-                            + Duration::from_secs(
-                                self.interval.unwrap_or(60)
-                                .max(self.min_interval.unwrap_or(0))
-                            )
-                        );
+                        self.announce(tracker::Event::None).await;
                     }
 
                     event = self.rx.recv() => {
                         match event {
-                            Some(TrackerEvent::Reload) => {
-                                self.announce().await;
-
-                                sleep.as_mut().reset(
-                                    tokio::time::Instant::now()
-                                    + Duration::from_secs(
-                                        self.interval.unwrap_or(60)
-                                        .max(self.min_interval.unwrap_or(0))
-                                    )
-                                );
+                            Some(TrackerEvent::Completed) => {
+                                self.announce(tracker::Event::Completed).await;
                             }
-                            _ => (),
-                        }
-                    }
-
-                    result = self.progress_rx.changed() => match result {
-                        Ok(()) => self.progress = self.progress_rx.borrow().clone(),
-                        Err(_) => {
-                            trace!("Quitting tracker loop");
-                            return;
+                            Some(TrackerEvent::Reload) => {
+                                self.announce(tracker::Event::None).await;
+                            }
+                            None => break,
                         }
                     }
                 );
+
+                sleep
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + self.interval());
             }
+
+            self.announce(tracker::Event::Stopped).await;
         }
         .instrument(span.clone())
         .await
@@ -138,7 +130,56 @@ impl Trackers {
         self.leechers = None;
     }
 
-    async fn announce(&mut self) {
+    async fn announce_to_one(
+        url: String,
+        client_id: PeerId,
+        bit_torrent_port: u16,
+        info_hash: Hash,
+        progress: tracker::Progress,
+        event: tracker::Event,
+    ) -> (String, Result<TrackerResponse>) {
+        let span = info_span!("tracker", url = %url);
+        async {
+            let result = match url.split_once("://").map(|(scheme, _)| scheme) {
+                Some("http" | "https") => {
+                    request_http(
+                        &url,
+                        bit_torrent_port,
+                        client_id,
+                        info_hash,
+                        progress,
+                        event,
+                    )
+                    .await
+                }
+                Some("udp") => {
+                    match tokio::time::timeout(
+                        Duration::from_secs(10),
+                        request_udp(
+                            &url,
+                            bit_torrent_port,
+                            client_id,
+                            info_hash,
+                            progress,
+                            event,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(response) => response,
+                        Err(_) => Err(anyhow::anyhow!("Tracker manager timeout")),
+                    }
+                }
+                Some(proto) => Err(anyhow::anyhow!("Unsupported protocol {proto}")),
+                None => Err(anyhow::anyhow!("Invalid tracker URL")),
+            };
+
+            (url, result)
+        }
+        .instrument(span).await
+    }
+
+    async fn announce(&mut self, event: tracker::Event) {
         const ANNOUNCE_TO_ALL_TIERS: bool = true;
         let mut discovered = false;
 
@@ -162,7 +203,6 @@ impl Trackers {
             let mut bad = Vec::new();
             for u in 0..self.urls[t].len() {
                 let url = self.urls[t][u].clone();
-                let span = info_span!("tracker", url = %url);
                 self.progress_tx.send_modify(|p| {
                     p.trackers.entry(url.clone()).and_modify(|t| {
                         t.succeeded = Some(TrackerStatus::Announcing);
@@ -172,30 +212,19 @@ impl Trackers {
                 let client_id = self.config_rx.borrow().client_id;
                 let bit_torrent_port = self.config_rx.borrow().bit_torrent_port;
                 let info_hash = self.info_hash.clone();
-                let progress = self.progress.clone();
+                let progress = self.progress_rx.borrow().clone();
+                let event = event.clone();
 
-                tasks.spawn(async move {
-                    let result = match url.split_once("://").map(|(scheme, _)| scheme) {
-                        Some("http" | "https") => {
-                            request_http(&url, bit_torrent_port, &client_id, &info_hash, &progress).await
-                        }
-                        Some("udp") => {
-                            match tokio::time::timeout(
-                                Duration::from_secs(10),
-                                request_udp(&url, bit_torrent_port, &client_id, &info_hash, &progress),
-                            )
-                            .await
-                            {
-                                Ok(response) => response,
-                                Err(_) => Err(anyhow::anyhow!("Tracker manager timeout")),
-                            }
-                        }
-                        Some(proto) => Err(anyhow::anyhow!("Unsupported protocol {proto}")),
-                        None => Err(anyhow::anyhow!("Invalid tracker URL")),
-                    };
-
-                    (url, result)
-                }.instrument(span));
+                tasks.spawn(
+                    Self::announce_to_one(
+                        url,
+                        client_id,
+                        bit_torrent_port,
+                        info_hash,
+                        progress,
+                        event,
+                    ),
+                );
             }
 
             while let Some(result) = tasks.join_next().await {

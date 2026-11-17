@@ -64,7 +64,7 @@ macro_rules! impl_id {
     };
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Hash(pub [u8; 20]);
 impl Hash {
     pub fn from_xt(xt: &str) -> Result<Self> {

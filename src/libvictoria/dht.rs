@@ -217,9 +217,10 @@ impl DHTManager {
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel(100);
         let (info_tx, info_rx) = watch::channel(DHTInfo::default());
-        let node_id = NodeId::random();
+        let node_id = config_rx.borrow().node_id;
+        let dht_port = config_rx.borrow().dht_port;
         Ok(Self {
-            dht: DHT::bind(node_id, 6767).await?,
+            dht: DHT::bind(node_id, dht_port).await?,
             routing_table: RoutingTable::new(node_id),
             id: node_id,
             tx,

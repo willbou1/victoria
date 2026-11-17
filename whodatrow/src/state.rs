@@ -153,33 +153,29 @@ where
             return;
         }
 
-        if let Some(hash) = self
+        let Some(hash) = self
             .row_states
             .iter()
             .find(|(_, state)| state.bounding_box.intersects(col, row))
-            .map(|(h, _)| h)
-            .copied()
-        {
-            // TODO check if really necessary
-            self.unfocus_branch();
+            .map(|(h, _)| *h)
+        else {
+            return;
+        };
 
-            self.selected_row = Some(hash);
-            for (s, sub_state) in self
-                .row_states
-                .get_mut(&hash)
-                .unwrap()
-                .sub_table_states
-                .iter_mut()
-                .enumerate()
+        self.unfocus_branch();
+        self.selected_row = Some(hash);
+
+        let row_state = self.row_states.get_mut(&hash).unwrap();
+
+        for (s, sub_state) in row_state.sub_table_states.iter_mut().enumerate() {
+            if row_state.show_sections[s]
+                && let Some(sub_state) = sub_state.as_mut()
+                && sub_state.bounding_box.intersects(col, row)
             {
-                if let Some(sub_state) = sub_state.as_mut()
-                    && sub_state.bounding_box.intersects(col, row)
-                {
-                    sub_state.prev_focused = Some(true);
-                    self.focused_section = Some(s);
-                    sub_state.focus_position(col, row);
-                    break;
-                }
+                sub_state.prev_focused = Some(true);
+                self.focused_section = Some(s);
+                sub_state.focus_position(col, row);
+                break;
             }
         }
     }

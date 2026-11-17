@@ -6,6 +6,7 @@ use rand::{rng, seq::IndexedRandom};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::SeekFrom,
+    time::Duration,
 };
 use tokio::{
     fs::{self, File},
@@ -19,15 +20,18 @@ use crate::libvictoria::{
     metainfo::Metadata,
     proto::{bit_torrent::Message, tracker},
     torrent::{PieceProgress, control::*, piece::Piece},
+    tracker::TrackerEvent,
     types::*,
 };
 use connection::Connection;
 use piece_cache::PieceCache;
 
 pub struct Transfer {
-    pub(crate) metadata: Metadata,
+    metadata: Metadata,
+    completed: bool,
     info_hash: Hash,
-    tracker_tx: watch::Sender<tracker::Progress>,
+    tracker_progress_tx: watch::Sender<tracker::Progress>,
+    tracker_event_tx: mpsc::Sender<TrackerEvent>,
     progress_tx: watch::Sender<Progress>,
     config_rx: watch::Receiver<Config>,
     pieces: Vec<Piece>,
@@ -55,7 +59,8 @@ impl Transfer {
     pub async fn new(
         metadata: Metadata,
         info_hash: Hash,
-        tracker_tx: watch::Sender<tracker::Progress>,
+        tracker_progress_tx: watch::Sender<tracker::Progress>,
+        tracker_event_tx: mpsc::Sender<TrackerEvent>,
         progress_tx: watch::Sender<Progress>,
         config_rx: watch::Receiver<Config>,
     ) -> Result<Self> {
@@ -79,10 +84,9 @@ impl Transfer {
             Self::load_state(&metadata, &info_hash, &config_rx, &mut files).await?;
         let downloaded = (piece_bitfield.num_set() * metadata.piece_length).min(metadata.length);
         let left = metadata.length - downloaded;
-        let _ = tracker_tx.send(tracker::Progress {
+        let _ = tracker_progress_tx.send(tracker::Progress {
             downloaded,
             left,
-            event: tracker::Event::Started,
             uploaded: 0,
         });
 
@@ -104,19 +108,29 @@ impl Transfer {
         });
 
         Ok(Self {
+            completed: left == 0,
             info_hash,
             piece_cache: PieceCache::new(Self::PIEC_CACHE_CAPACITY),
             torrent_files: files,
             pieces,
             priority_cursor: 0,
             metadata,
-            tracker_tx,
+            tracker_progress_tx,
+            tracker_event_tx,
             progress_tx,
             config_rx,
             piece_bitfield,
             connections: HashMap::new(),
             uploaded: 0,
         })
+    }
+
+    pub fn get_metadata(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    pub fn completed(&self) -> bool {
+        self.completed
     }
 
     pub async fn save_state(&self) -> Result<()> {
@@ -170,7 +184,7 @@ impl Transfer {
         if let Some(initial_messages) = initial_messages {
             for msg in initial_messages.drain(..) {
                 trace!("Read initial transfer message {msg:?}");
-                self.handle_event(&peer_id, msg).await?;
+                self.handle_message(&peer_id, msg).await?;
             }
         }
         Ok(())
@@ -236,7 +250,7 @@ impl Transfer {
         let _ = when;
     }
 
-    pub async fn handle_event(&mut self, peer_id: &PeerId, message: Message) -> Result<()> {
+    pub async fn handle_message(&mut self, peer_id: &PeerId, message: Message) -> Result<()> {
         let span = info_span!("connection", id = %peer_id);
         let guard = span.enter();
         match message {
@@ -247,7 +261,7 @@ impl Transfer {
                 }
             }
 
-            Message::Have { index } => {
+            Message::Have { piece_index: index } => {
                 debug!("Got have {index}");
                 self.check_piece_index(index, "have")?;
                 self.connections
@@ -302,79 +316,13 @@ impl Transfer {
             Message::Piece {
                 index,
                 begin,
-                piece: block,
+                data,
                 response_time,
             } => {
                 self.check_piece_begin(index, begin, true, "piece")?;
                 let block_index = Self::block_index(begin);
-
-                // maybe keep track of later pieces just for response time
-                if !self.pieces[index].has_obtrined(block_index) {
-                    debug!("Got block {index}:{block_index}");
-                    let who_downloading = self.pieces[index].who_downloading(block_index);
-                    self.connections.entry(*peer_id).and_modify(|c| {
-                        c.receive_piece(
-                            block.len(),
-                            response_time,
-                            who_downloading.map(|w| w == peer_id).unwrap_or(false),
-                        )
-                    });
-
-                    if let Some(who) = who_downloading
-                        && who != peer_id
-                    {
-                        self.connections
-                            .get_mut(who)
-                            .map(|c| c.sub_sent_requests(1));
-                    }
-
-                    self.write_block(index, block_index, &block).await?;
-                    if self.pieces[index].place(block_index, block, true).is_some() {
-                        self.piece_bitfield.set(index);
-                        for con in self.connections.values() {
-                            con.send(Message::Have { index }).await;
-                        }
-                        let (downloaded, left) = self.downloaded_left();
-                        let _ = self.tracker_tx.send(tracker::Progress {
-                            downloaded,
-                            left,
-                            event: tracker::Event::Started,
-                            uploaded: self.uploaded,
-                        });
-                        self.progress_tx.send_modify(|p| {
-                            if let Some(t) = p.transfer.as_mut() {
-                                for (f, file) in self.metadata.files.iter().enumerate() {
-                                    if file.pieces.contains(&index) {
-                                        t.files[f].piece_bitfield =
-                                            self.piece_bitfield.subfield(file.pieces);
-                                    }
-                                }
-                                t.downloaded = self.downloaded_left().0;
-                                t.piece_bitfield = self.piece_bitfield.clone();
-                                t.active_pieces.retain(|ap| ap.index != index);
-                            }
-                        });
-                    } else {
-                        self.progress_tx.send_modify(|p| {
-                            if let Some(t) = p.transfer.as_mut() {
-                                if let Some(active_piece) =
-                                    t.active_pieces.iter_mut().find(|ap| ap.index == index)
-                                {
-                                    active_piece.block_bitfield = self.pieces[index].to_bitfield();
-                                    active_piece.num_verification_failures =
-                                        self.pieces[index].num_verification_failures();
-                                } else {
-                                    t.active_pieces.push(PieceProgress {
-                                        index,
-                                        block_bitfield: self.pieces[index].to_bitfield(),
-                                        num_verification_failures: self.pieces[index]
-                                            .num_verification_failures(),
-                                    });
-                                }
-                            }
-                        });
-                    }
-                }
+                self.receive_block(*peer_id, index, block_index, data, response_time)
+                    .await?;
             }
 
             Message::Choked(choked) => {
@@ -390,6 +338,7 @@ impl Transfer {
                 }
             }
             Message::Interested(interested) => {
+                debug!("Set interest {interested}");
                 if let Some(con) = self.connections.get_mut(peer_id) {
                     con.set_peer_interested(interested);
                     con.set_am_choking(false).await;
@@ -439,6 +388,94 @@ impl Transfer {
         self.dispatch_requests().await?;
         self.check_request_accounting("After dispatch");
 
+        Ok(())
+    }
+
+    async fn receive_block(
+        &mut self,
+        peer_id: PeerId,
+        piece_index: usize,
+        block_index: usize,
+        block: Vec<u8>,
+        response_time: Option<Duration>,
+    ) -> Result<()> {
+        // maybe keep track of later pieces just for response time
+        if !self.pieces[piece_index].has_obtrined(block_index) {
+            debug!("Got block {piece_index}:{block_index}");
+            let who_downloading = self.pieces[piece_index].who_downloading(block_index);
+            self.connections.entry(peer_id).and_modify(|c| {
+                c.receive_piece(
+                    block.len(),
+                    response_time,
+                    who_downloading.map(|w| *w == peer_id).unwrap_or(false),
+                )
+            });
+
+            if let Some(who) = who_downloading
+                && *who != peer_id
+            {
+                self.connections
+                    .get_mut(who)
+                    .map(|c| c.sub_sent_requests(1));
+            }
+
+            self.write_block(piece_index, block_index, &block).await?;
+            if self.pieces[piece_index]
+                .place(block_index, block, true)
+                .is_some()
+            {
+                self.piece_bitfield.set(piece_index);
+                for con in self.connections.values() {
+                    con.send(Message::Have { piece_index }).await;
+                }
+
+                let (downloaded, left) = self.downloaded_left();
+                let _ = self.tracker_progress_tx.send(tracker::Progress {
+                    downloaded,
+                    left,
+                    uploaded: self.uploaded,
+                });
+                if left == 0 {
+                    let _ = self.tracker_event_tx.send(TrackerEvent::Completed).await;
+                    self.completed = true;
+                }
+
+                self.progress_tx.send_modify(|p| {
+                    if let Some(t) = p.transfer.as_mut() {
+                        for (f, file) in self.metadata.files.iter().enumerate() {
+                            if file.pieces.contains(&piece_index) {
+                                t.files[f].piece_bitfield =
+                                    self.piece_bitfield.subfield(file.pieces);
+                            }
+                        }
+                        t.downloaded = self.downloaded_left().0;
+                        t.piece_bitfield = self.piece_bitfield.clone();
+                        t.active_pieces.retain(|ap| ap.index != piece_index);
+                    }
+                });
+            } else {
+                self.progress_tx.send_modify(|p| {
+                    if let Some(t) = p.transfer.as_mut() {
+                        if let Some(active_piece) = t
+                            .active_pieces
+                            .iter_mut()
+                            .find(|ap| ap.index == piece_index)
+                        {
+                            active_piece.block_bitfield = self.pieces[piece_index].to_bitfield();
+                            active_piece.num_verification_failures =
+                                self.pieces[piece_index].num_verification_failures();
+                        } else {
+                            t.active_pieces.push(PieceProgress {
+                                index: piece_index,
+                                block_bitfield: self.pieces[piece_index].to_bitfield(),
+                                num_verification_failures: self.pieces[piece_index]
+                                    .num_verification_failures(),
+                            });
+                        }
+                    }
+                });
+            }
+        }
         Ok(())
     }
 
@@ -665,22 +702,20 @@ impl Transfer {
         None
     }
 
-    pub fn handle_command(&self, command: Command) {
-        use Command::*;
-        match command {
-            SetPriority(index, priority) => {
-                self.progress_tx.send_modify(|prog| {
-                    prog.transfer
-                        .as_mut()
-                        .and_then(|t| t.files.get_mut(index))
-                        .map(|f| f.priority = priority);
-                });
-            }
-            _ => (),
-        }
+    pub fn set_file_priority(&self, index: usize, priority: FilePriority) {
+        self.progress_tx.send_modify(|prog| {
+            prog.transfer
+                .as_mut()
+                .and_then(|t| t.files.get_mut(index))
+                .map(|f| f.priority = priority);
+        });
     }
 
     async fn dispatch_requests(&mut self) -> Result<()> {
+        if self.completed {
+            return Ok(());
+        }
+
         let peer_ids: Vec<_> = self.connections.keys().copied().collect();
         for peer_id in peer_ids {
             while self.connections[&peer_id].can_request() {

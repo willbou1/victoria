@@ -281,12 +281,12 @@ impl Connection {
         }
     }
 
-    pub async fn send_piece(&mut self, index: usize, begin: usize, piece: Vec<u8>) {
-        self.uploaded_this_second += piece.len();
+    pub async fn send_piece(&mut self, index: usize, begin: usize, data: Vec<u8>) {
+        self.uploaded_this_second += data.len();
         self.send(Message::Piece {
             index,
             begin,
-            piece,
+            data,
             response_time: None,
         })
         .await;

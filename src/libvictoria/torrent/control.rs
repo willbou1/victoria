@@ -9,10 +9,15 @@ use crate::libvictoria::{bitfield::Bitfield, metainfo::Metadata, types::*};
 
 #[derive(Debug)]
 pub struct Config {
-    pub client_id: PeerId,
     pub download_path: PathBuf,
     pub data_path: PathBuf,
+
+    pub client_id: PeerId,
     pub bit_torrent_port: u16,
+    pub connection_cap: usize,
+
+    pub node_id: NodeId,
+    pub dht_port: u16,
 }
 
 #[derive(Debug)]
@@ -249,17 +254,6 @@ impl Progress {
             trackers: HashMap::new(),
         }
     }
-}
-
-#[derive(Debug)]
-pub enum Command {
-    Stop,
-    Pause,
-    Resume,
-    Delete,
-    ToggleSequential,
-    SetPriority(usize, FilePriority),
-    ReloadTrackers,
 }
 
 #[derive(Debug)]

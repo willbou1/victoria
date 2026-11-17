@@ -9,7 +9,7 @@ use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
 use crate::libvictoria::types::*;
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     None = 0,
     Completed = 1,
@@ -20,7 +20,7 @@ pub enum Event {
 impl Event {
     fn to_string(&self) -> &str {
         match self {
-            Self::None => "none",
+            Self::None => "",
             Self::Started => "started",
             Self::Stopped => "stopped",
             Self::Completed => "completed",
@@ -89,7 +89,6 @@ pub struct Progress {
     pub downloaded: usize,
     pub uploaded: usize,
     pub left: usize,
-    pub event: Event,
 }
 
 impl Default for Progress {
@@ -98,7 +97,6 @@ impl Default for Progress {
             downloaded: 0,
             uploaded: 0,
             left: 0,
-            event: Event::None,
         }
     }
 }
@@ -106,9 +104,10 @@ impl Default for Progress {
 pub async fn request_udp(
     url: &str,
     bit_torrent_port: u16,
-    client_id: &PeerId,
-    info_hash: &Hash,
-    progress: &Progress,
+    client_id: PeerId,
+    info_hash: Hash,
+    progress: Progress,
+    event: Event,
 ) -> Result<TrackerResponse> {
     const MAX_ATTEMPTS: usize = 2;
 
@@ -174,7 +173,7 @@ pub async fn request_udp(
     request[56..64].copy_from_slice(&(progress.downloaded as i64).to_be_bytes());
     request[64..72].copy_from_slice(&(progress.left as i64).to_be_bytes());
     request[72..80].copy_from_slice(&(progress.uploaded as i64).to_be_bytes());
-    request[80..84].copy_from_slice(&(progress.event.clone() as i32).to_be_bytes());
+    request[80..84].copy_from_slice(&(event as i32).to_be_bytes());
     request[84..88].fill(0);
     rng().fill_bytes(&mut request[88..92]);
     request[92..96].copy_from_slice(&(-1i32).to_be_bytes()); // num_want
@@ -219,9 +218,10 @@ pub async fn request_udp(
 pub async fn request_http(
     url: &str,
     bit_torrent_port: u16,
-    client_id: &PeerId,
-    info_hash: &Hash,
-    progress: &Progress,
+    client_id: PeerId,
+    info_hash: Hash,
+    progress: Progress,
+    event: Event,
 ) -> Result<TrackerResponse> {
     let mut url = Url::parse(&url)?;
     {
@@ -230,8 +230,8 @@ pub async fn request_http(
         query.append_pair("uploaded", &progress.uploaded.to_string());
         query.append_pair("downloaded", &progress.downloaded.to_string());
         query.append_pair("left", &progress.left.to_string());
-        if !matches!(progress.event, Event::None) {
-            query.append_pair("event", progress.event.to_string());
+        if !matches!(event, Event::None) {
+            query.append_pair("event", event.to_string());
         }
     }
 

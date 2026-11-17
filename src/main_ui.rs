@@ -66,6 +66,10 @@ impl MainUI {
                 .join("victoria"),
             client_id: PeerId::random(),
             bit_torrent_port: 6881,
+            connection_cap: 5,
+
+            node_id: NodeId::random(),
+            dht_port: 6881,
         });
 
         Ok(Self {
@@ -286,9 +290,10 @@ impl MainUI {
                     }
 
                     let torrents = self.client.torrents().await;
-                    let rows: Vec<_> = torrents.values()
+                    let mut rows: Vec<_> = torrents.values()
                         .map(|t| t.progress())
                         .collect();
+                    rows.sort_by_key(|t| t.info_hash);
 
                     let (width, height) = terminal::size()?;
                     let width = width as usize;
@@ -312,7 +317,7 @@ impl MainUI {
                         .collect::<Vec<_>>()
                         .join("\r\n");
 
-                    let fill = height.saturating_sub(self.table.num_row() + 5);
+                    let fill = height.saturating_sub(self.table.num_row() - self.scroll + 5);
                     for l in 0..fill {
                         frame.extend(std::iter::repeat_n(' ', width));
                         if l < fill - 1 {

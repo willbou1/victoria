@@ -17,8 +17,8 @@ use tokio::{
     sync::{Mutex, mpsc, watch},
 };
 use tokio_util::sync::CancellationToken;
-use torrent::Torrent;
 use torrent::control::*;
+use torrent::{Event, Torrent};
 use tracing::{debug, error};
 use types::*;
 
@@ -34,25 +34,32 @@ pub mod torrent;
 pub mod types;
 
 pub struct TorrentHandle {
-    tx: mpsc::Sender<Command>,
     rx: watch::Receiver<Progress>,
+    tx: mpsc::Sender<Event>,
 }
 
 impl TorrentHandle {
+    pub async fn delete(&self) {
+        let _ = self.tx.send(Event::Delete).await;
+    }
+
     pub async fn stop(&self) {
-        let _ = self.tx.send(Command::Stop).await;
+        let _ = self.tx.send(Event::Stop).await;
     }
 
     pub async fn reload(&self) {
-        let _ = self.tx.send(Command::ReloadTrackers).await;
+        let _ = self.tx.send(Event::ReloadTrackers).await;
     }
 
     pub async fn toggle_sequential(&self) {
-        let _ = self.tx.send(Command::ToggleSequential).await;
+        let _ = self.tx.send(Event::ToggleSequential).await;
     }
 
     pub async fn set_priority(&self, file_index: usize, priority: FilePriority) {
-        let _ = self.tx.send(Command::SetPriority(file_index, priority)).await;
+        let _ = self
+            .tx
+            .send(Event::SetPriority(file_index, priority))
+            .await;
     }
 
     pub fn progress(&self) -> watch::Ref<'_, Progress> {
@@ -102,7 +109,9 @@ impl TorrentClient {
             self.inbound_task = Some(
                 tokio::task::Builder::new()
                     .name("Inbound")
-                    .spawn(async move { Self::inbound(cancel, config_rx, torrent_handles).await })?,
+                    .spawn(
+                        async move { Self::inbound(cancel, config_rx, torrent_handles).await },
+                    )?,
             );
 
             let dht = DHTManager::new(self.cancel.clone(), self.config_rx.clone()).await?;
@@ -196,7 +205,13 @@ impl TorrentClient {
                     let peer_info = PeerInfo::from(Endpoint::from(addr));
                     let known_info_hashes: Vec<_> = torrent_handles.lock().await.keys().cloned().collect();
                     let bit_torrent = BitTorrent::receive_handshake(&peer_info, &known_info_hashes, &local_id, socket ).await;
-                    debug!("GOT A FUCKIN TCP HANDSHAKE BIAAATCHHHH {bit_torrent:?}");
+                    if let Ok(bit_torrent) = bit_torrent {
+                        debug!("BABYYY {bit_torrent:?}");
+                        let _ = torrent_handles.lock().await.get(&bit_torrent.info_hash).unwrap()
+                        .tx.send(
+                            Event::Connection(bit_torrent, peer_info, None)
+                        ).await;
+                    }
                 }
             }
         }
@@ -236,7 +251,7 @@ impl TorrentClient {
             torrent.info_hash,
             Arc::new(TorrentHandle {
                 rx: torrent.progress_rx.clone(),
-                tx: torrent.command_tx.clone(),
+                tx: torrent.peer_tx.clone(),
             }),
         );
         self.torrent_tasks.insert(
@@ -267,7 +282,7 @@ impl TorrentClient {
 
     pub async fn remove_torrent(&mut self, info_hash: &Hash) -> Result<()> {
         if let Some(handle) = self.torrent_handles.lock().await.remove(info_hash) {
-            handle.stop().await;
+            handle.delete().await;
             self.torrent_tasks.remove(info_hash).unwrap().await??;
         }
         Ok(())

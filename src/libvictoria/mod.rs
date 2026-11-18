@@ -17,8 +17,8 @@ use tokio::{
     sync::{Mutex, mpsc, watch},
 };
 use tokio_util::sync::CancellationToken;
-use torrent::control::*;
-use torrent::{Event, Torrent};
+use torrent::{ConnectionEvent, control::*};
+use torrent::{Event, CommandEvent, Torrent};
 use tracing::{debug, error};
 use types::*;
 
@@ -39,26 +39,28 @@ pub struct TorrentHandle {
 }
 
 impl TorrentHandle {
+    async fn command(&self, command: CommandEvent) {
+        let _ = self.tx.send(Event::Command(command)).await;
+    }
+
     pub async fn delete(&self) {
-        let _ = self.tx.send(Event::Delete).await;
+        self.command(CommandEvent::Delete).await;
     }
 
     pub async fn stop(&self) {
-        let _ = self.tx.send(Event::Stop).await;
+        self.command(CommandEvent::Stop).await;
     }
 
     pub async fn reload(&self) {
-        let _ = self.tx.send(Event::ReloadTrackers).await;
+        self.command(CommandEvent::Reload).await;
     }
 
     pub async fn toggle_sequential(&self) {
-        let _ = self.tx.send(Event::ToggleSequential).await;
+        self.command(CommandEvent::ToggleSequential).await;
     }
 
     pub async fn set_priority(&self, file_index: usize, priority: FilePriority) {
-        let _ = self
-            .tx
-            .send(Event::SetPriority(file_index, priority))
+        self.command(CommandEvent::SetPriority(file_index, priority))
             .await;
     }
 
@@ -208,9 +210,14 @@ impl TorrentClient {
                     if let Ok(bit_torrent) = bit_torrent {
                         debug!("BABYYY {bit_torrent:?}");
                         let _ = torrent_handles.lock().await.get(&bit_torrent.info_hash).unwrap()
-                        .tx.send(
-                            Event::Connection(bit_torrent, peer_info, None)
-                        ).await;
+                        .tx.send(Event::Connection(
+                            ConnectionEvent::Connected {
+                                bit_torrent,
+                                peer_info,
+                                known_id: None,
+                                ingoing: true,
+                            }
+                        )).await;
                     }
                 }
             }

@@ -190,6 +190,12 @@ impl Transfer {
         Ok(())
     }
 
+    pub fn connection_download_rate(&self, peer_id: &PeerId) -> Option<usize> {
+        self.connections
+            .get(peer_id)
+            .map(|c| c.download_rate())
+    }
+
     pub fn set_max_pipeline(&mut self, peer_id: &PeerId, max_pipeline: Option<usize>) {
         self.connections
             .get_mut(peer_id)

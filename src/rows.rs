@@ -452,6 +452,16 @@ impl Row for Progress {
                 ..Column::DEFAULT
             },
             Column {
+                header: "Dis",
+                alignment: Right,
+                value: |prog, _| prog.num_discovery_attempts.to_string(),
+                total: Some(|rows| {
+                    let total: usize = rows.iter().map(|r| r.num_discovery_attempts).sum();
+                    format!("{total}")
+                }),
+                ..Column::DEFAULT
+            },
+            Column {
                 header: "Con",
                 alignment: Right,
                 value: |prog, _| prog.num_connected_peers.to_string(),

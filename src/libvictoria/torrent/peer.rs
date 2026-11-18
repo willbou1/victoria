@@ -6,8 +6,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::libvictoria::{
-    proto::{bit_torrent::Message, metadata::MetadataMessage},
-    types::*,
+    proto::{bit_torrent::Message, metadata::MetadataMessage}, signal::{AsymmetricEMA, Decay}, types::*
 };
 
 const INITIAL_TRANSFER_MESSAGES_CAPACITY: usize = 5;
@@ -20,7 +19,7 @@ pub enum PeerState {
         at: Instant,
         interval: Duration,
         reconnecting: bool,
-        reason: anyhow::Error,
+        reason: Option<anyhow::Error>,
     },
     Connected {
         at: Instant,
@@ -36,7 +35,7 @@ impl PeerState {
         matches!(self, Self::Connected { .. })
     }
 
-    pub fn disconnect(&mut self, reason: anyhow::Error) {
+    pub fn disconnect(&mut self, reason: Option<anyhow::Error>) {
         *self = Self::Disconnected {
             at: Instant::now(),
             interval: MIN_RECONNECTION_INTERVAL,
@@ -45,7 +44,7 @@ impl PeerState {
         }
     }
 
-    pub fn reconnect(&mut self, tx: mpsc::Sender<Message>) {
+    pub fn connect(&mut self, tx: mpsc::Sender<Message>) {
         *self = Self::Connected {
             initial_transfer_messages: VecDeque::with_capacity(INITIAL_TRANSFER_MESSAGES_CAPACITY),
             at: Instant::now(),
@@ -80,11 +79,17 @@ pub struct Peer {
     pub supports_metadata: bool,
     pub supports_dht: bool,
 
+    disconnects: Decay,
+
     downloaded_metadata_this_second: usize,
     uploaded_metadata_this_second: usize,
+
+    pub last_download_rate: usize,
 }
 
 impl Peer {
+    const DISCONNECTS_HALF_LIFE: Duration = Duration::from_mins(15);
+
     pub fn new(
         info: PeerInfo,
         tx: mpsc::Sender<Message>,
@@ -101,16 +106,20 @@ impl Peer {
             supports_pex: false,
             uploaded_metadata_this_second: 0,
             downloaded_metadata_this_second: 0,
-            state: PeerState::Connected {
-                initial_transfer_messages: VecDeque::with_capacity(
-                    INITIAL_TRANSFER_MESSAGES_CAPACITY,
-                ),
+            disconnects: Decay::new(Self::DISCONNECTS_HALF_LIFE, None),
+            state: PeerState::Disconnected {
+                reconnecting: false,
                 at: Instant::now(),
-                sent_metadata_requests: 0,
-                received_extension_handshake: false,
-                tx,
+                interval: MIN_RECONNECTION_INTERVAL,
+                reason: None,
             },
+
+            last_download_rate: 0,
         }
+    }
+
+    pub fn disconnects(&mut self) -> f64 {
+        self.disconnects.value()
     }
 
     pub fn uploaded_metadata_this_second(&self) -> usize {
@@ -146,6 +155,11 @@ impl Peer {
         {
             *sent_metadata_requests = sent_metadata_requests.saturating_sub(count);
         }
+    }
+
+    pub fn disconnect(&mut self, reason: Option<anyhow::Error>) {
+        self.disconnects.change(|d| d + 1.);
+        self.state.disconnect(reason);
     }
 
     pub async fn send(&self, msg: Message) {

@@ -9,7 +9,6 @@ use tokio::{
     net::{
         TcpStream,
         tcp::{OwnedReadHalf, OwnedWriteHalf},
-        unix::SocketAddr,
     },
     select,
     sync::mpsc,
@@ -19,9 +18,9 @@ use tracing::trace;
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
 use super::{metadata::MetadataMessage, pex::PEXMessage};
-use crate::libvictoria::{bitfield::Bitfield, torrent::Event, types::*};
+use crate::libvictoria::{bitfield::Bitfield, torrent::{Event, ConnectionEvent}, types::*};
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
 pub enum Message {
@@ -405,12 +404,12 @@ impl BitTorrent {
         select! {
             result = reader_task => {
                 if let Err(e) = result {
-                    let _ = tx.send(Event::Disconnection(id, e)).await;
+                    let _ = tx.send(Event::Connection(ConnectionEvent::Disconnected(id, e))).await;
                 }
             }
             result = writer_task => {
                 if let Err(e) = result {
-                    let _ = tx.send(Event::Disconnection(id, e)).await;
+                    let _ = tx.send(Event::Connection(ConnectionEvent::Disconnected(id, e))).await;
                 }
             }
         }

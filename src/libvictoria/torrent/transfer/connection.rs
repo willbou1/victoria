@@ -14,6 +14,7 @@ const UPLOAD_LIMIT: usize = 32 * 1024; // b/s per peer
 
 const TIMEOUTS_BOOST_TAU: Duration = Duration::from_millis(1250);
 const TIMEOUTS_THROTTLE_TAU: Duration = Duration::from_secs(5);
+const DOWNLOAD_RATE_TAU: Duration = Duration::from_secs(20);
 
 const DEFAULT_PIPELINE: usize = 20;
 const MIN_PIPELINE: usize = 2;
@@ -49,6 +50,7 @@ pub struct Connection {
     timeouts_this_second: usize,
 
     timeouts_ema: AsymmetricEMA,
+    download_rate_ema: AsymmetricEMA,
 }
 
 impl Connection {
@@ -87,6 +89,12 @@ impl Connection {
                 Duration::from_secs(1),
                 TIMEOUTS_BOOST_TAU,
                 TIMEOUTS_THROTTLE_TAU,
+                None,
+            ),
+            download_rate_ema: AsymmetricEMA::new(
+                Duration::from_secs(1),
+                DOWNLOAD_RATE_TAU,
+                DOWNLOAD_RATE_TAU,
                 None,
             ),
         };
@@ -134,6 +142,9 @@ impl Connection {
 
     pub fn piece_cursor(&self) -> Option<usize> {
         self.piece_cursor
+    }
+    pub fn download_rate(&self) -> usize {
+        self.download_rate_ema.value() as usize
     }
     pub fn uploaded_this_second(&self) -> usize {
         self.uploaded_this_second
@@ -306,6 +317,7 @@ impl Connection {
 
     pub fn reset_stats(&mut self) {
         self.control_congestion();
+        self.download_rate_ema.update(self.downloaded_this_second as f64);
         self.notify(|c| {
             c.timeout_rate = self.timeouts_this_second;
             c.reject_rate = self.rejects_this_second;

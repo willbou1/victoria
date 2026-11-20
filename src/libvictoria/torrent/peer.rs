@@ -1,13 +1,17 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     time::{Duration, Instant},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::debug;
 
 use crate::libvictoria::{
-    proto::{bit_torrent::Message, metadata::MetadataMessage}, signal::{AsymmetricEMA, Decay}, types::*
+    proto::{bit_torrent::Message, metadata::MetadataMessage},
+    signal::Decay,
+    types::*,
 };
+
+use super::control::{PeerProgress, Progress};
 
 const INITIAL_TRANSFER_MESSAGES_CAPACITY: usize = 5;
 
@@ -70,21 +74,23 @@ impl PeerState {
 }
 
 pub struct Peer {
+    progress_tx: watch::Sender<Progress>,
     pub state: PeerState,
-    pub info: PeerInfo,
-    pub client: Option<String>,
-    pub max_requests: Option<usize>,
-    pub supports_fast: bool,
-    pub supports_pex: bool,
-    pub supports_metadata: bool,
-    pub supports_dht: bool,
+    info: PeerInfo,
+    client: Option<String>,
+    max_requests: Option<usize>,
+    supports_fast: bool,
+    supports_pex: bool,
+    supports_metadata: bool,
+    supports_dht: bool,
+    discovery_mechanisms: HashSet<DiscoveryMechanism>,
 
     disconnects: Decay,
 
     downloaded_metadata_this_second: usize,
     uploaded_metadata_this_second: usize,
 
-    pub last_download_rate: usize,
+    last_download_rate: usize,
 }
 
 impl Peer {
@@ -93,12 +99,15 @@ impl Peer {
     pub fn new(
         info: PeerInfo,
         tx: mpsc::Sender<Message>,
+        progress_tx: watch::Sender<Progress>,
         supports_fast: bool,
         supports_dht: bool,
+        discovery_mechanism: DiscoveryMechanism,
     ) -> Self {
-        Self {
+        let peer = Self {
             client: None,
             info,
+            progress_tx,
             supports_fast,
             supports_dht,
             max_requests: None,
@@ -113,8 +122,43 @@ impl Peer {
                 interval: MIN_RECONNECTION_INTERVAL,
                 reason: None,
             },
+            discovery_mechanisms: HashSet::from([discovery_mechanism]),
 
             last_download_rate: 0,
+        };
+        peer.init_progress();
+        peer
+    }
+
+    fn init_progress(&self) {
+        if let Some(id) = self.info.id {
+            self.progress_tx.send_modify(|p| {
+                p.peers.insert(
+                    id,
+                    PeerProgress {
+                        id,
+                        discovery_mechanisms: self.discovery_mechanisms.clone(),
+                        endpoints: self.info.endpoints.0.clone(),
+                        connection: None,
+                        client: self.client.clone(),
+                        supports_dht: self.supports_dht,
+                        supports_fast: self.supports_fast,
+                        supports_metadata: self.supports_metadata,
+                        supports_pex: self.supports_pex,
+                        metadata_down_speed: self.downloaded_metadata_this_second,
+                        metadata_up_speed: self.uploaded_metadata_this_second,
+                        errors: Vec::new(),
+                    },
+                );
+            });
+        }
+    }
+
+    fn notify(&self, f: impl Fn(&mut PeerProgress)) {
+        if let Some(id) = &self.info.id {
+            self.progress_tx.send_modify(|p| {
+                p.peers.get_mut(id).map(|c| f(c));
+            });
         }
     }
 
@@ -128,10 +172,43 @@ impl Peer {
     pub fn downloaded_metadata_this_second(&self) -> usize {
         self.downloaded_metadata_this_second
     }
+    pub fn info(&self) -> &PeerInfo {
+        &self.info
+    }
+    pub fn client(&self) -> Option<&String> {
+        self.client.as_ref()
+    }
+    pub fn supports_fast(&self) -> bool {
+        self.supports_fast
+    }
+    pub fn supports_pex(&self) -> bool {
+        self.supports_pex
+    }
+    pub fn supports_metadata(&self) -> bool {
+        self.supports_metadata
+    }
+    pub fn supports_dht(&self) -> bool {
+        self.supports_dht
+    }
+
+    pub fn modify_info(&mut self, f: impl Fn(&mut PeerInfo)) {
+        f(&mut self.info);
+        self.notify(|p| p.endpoints.extend(self.info.endpoints.iter().cloned()));
+    }
+    pub fn add_discovery_mechanism(&mut self, mechanism: DiscoveryMechanism) {
+        self.discovery_mechanisms.insert(mechanism);
+        self.notify(|p| {
+            p.discovery_mechanisms.insert(mechanism);
+        });
+    }
 
     pub fn reset_statistics(&mut self) {
         self.uploaded_metadata_this_second = 0;
         self.downloaded_metadata_this_second = 0;
+        self.notify(|p| {
+            p.metadata_down_speed = self.downloaded_metadata_this_second;
+            p.metadata_up_speed = self.uploaded_metadata_this_second;
+        });
     }
 
     pub fn can_request_metadata(&self) -> bool {
@@ -159,6 +236,9 @@ impl Peer {
 
     pub fn disconnect(&mut self, reason: Option<anyhow::Error>) {
         self.disconnects.change(|d| d + 1.);
+        if let Some(reason) = &reason {
+            self.notify(|p| p.errors.push(format!("{reason:#}")));
+        }
         self.state.disconnect(reason);
     }
 
@@ -234,6 +314,21 @@ impl Peer {
         } = &mut self.state
         {
             *received_extension_handshake = true;
+        }
+        self.notify(|p| {
+            p.supports_metadata = self.supports_metadata;
+            p.supports_pex = self.supports_pex;
+            p.client = self.client.clone();
+        });
+    }
+}
+
+impl Drop for Peer {
+    fn drop(&mut self) {
+        if let Some(id) = &self.info.id {
+            self.progress_tx.send_modify(|p| {
+                p.peers.remove(id);
+            });
         }
     }
 }

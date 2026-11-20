@@ -31,7 +31,7 @@ pub struct PieceProgress {
 pub struct ConnectionProgress {
     pub down_speed: usize,
     pub up_speed: usize,
-    pub piece_bitfield: Bitfield,
+    pub piece_bitfield: Option<Bitfield>,
     pub am_choking: bool,
     pub am_interested: bool,
     pub peer_choking: bool,
@@ -140,26 +140,9 @@ pub struct FileInfo {
 }
 
 #[derive(Debug)]
-pub struct DiscoveryInfo {
-    pub trackers: bool,
-    pub pex: bool,
-    pub dht: bool,
-}
-
-impl Default for DiscoveryInfo {
-    fn default() -> Self {
-        Self {
-            dht: false,
-            pex: false,
-            trackers: false,
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct PeerProgress {
     pub id: PeerId,
-    pub discovery: DiscoveryInfo,
+    pub discovery_mechanisms: HashSet<DiscoveryMechanism>,
     pub client: Option<String>,
     pub supports_fast: bool,
     pub supports_pex: bool,
@@ -170,25 +153,6 @@ pub struct PeerProgress {
     pub endpoints: HashSet<Endpoint>,
     pub connection: Option<ConnectionProgress>,
     pub errors: Vec<String>,
-}
-
-impl PeerProgress {
-    pub(crate) fn new(id: PeerId) -> Self {
-        Self {
-            id,
-            discovery: DiscoveryInfo::default(),
-            endpoints: HashSet::new(),
-            connection: None,
-            client: None,
-            supports_dht: false,
-            supports_fast: false,
-            supports_metadata: false,
-            supports_pex: false,
-            metadata_down_speed: 0,
-            metadata_up_speed: 0,
-            errors: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug)]

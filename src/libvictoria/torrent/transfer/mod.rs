@@ -190,10 +190,25 @@ impl Transfer {
         Ok(())
     }
 
-    pub fn connection_download_rate(&self, peer_id: &PeerId) -> Option<usize> {
-        self.connections
-            .get(peer_id)
-            .map(|c| c.download_rate())
+    pub fn connection_download_rate(&self, peer_id: &PeerId) -> Option<f64> {
+        self.connections.get(peer_id).map(|c| c.download_rate())
+    }
+
+    pub fn is_connection_useless(
+        &self,
+        peer_id: &PeerId,
+    ) -> Option<bool> {
+        self.connections.get(peer_id).map(|c| {
+            c.piece_bitfield()
+                .map(|b| {
+                    b.iter()
+                        .zip(self.piece_bitfield.iter())
+                        .filter(|(a, b)| a ^ b)
+                        .count()
+                        == 0
+                })
+                .unwrap_or(false)
+        })
     }
 
     pub fn set_max_pipeline(&mut self, peer_id: &PeerId, max_pipeline: Option<usize>) {
@@ -262,8 +277,14 @@ impl Transfer {
         match message {
             Message::Bitfield(bitfield) => {
                 debug!("Set bitfield {:?}", bitfield.as_bytes());
+                ensure!(
+                    bitfield.num_bytes() == self.piece_bitfield.num_bytes(),
+                    "The received bitfield should be {} bytes long, got {}",
+                    self.piece_bitfield.num_bytes(),
+                    bitfield.num_bytes()
+                );
                 if let Some(con) = self.connections.get_mut(peer_id) {
-                    con.set_bitfield(bitfield)?;
+                    con.set_bitfield(bitfield);
                 }
             }
 
@@ -373,13 +394,13 @@ impl Transfer {
                 debug!("Got have all");
                 self.connections
                     .entry(*peer_id)
-                    .and_modify(|c| c.set_pieces());
+                    .and_modify(|c| c.set_full_bitfield(self.metadata.num_pieces));
             }
             Message::HaveNone => {
                 debug!("Got have none");
                 self.connections
                     .entry(*peer_id)
-                    .and_modify(|c| c.unset_pieces());
+                    .and_modify(|c| c.set_empty_bitfield(self.metadata.num_pieces));
             }
             Message::Suggest { index } => {
                 debug!("Got suggest for block {index}");

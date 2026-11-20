@@ -18,7 +18,11 @@ use tracing::trace;
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
 use super::{metadata::MetadataMessage, pex::PEXMessage};
-use crate::libvictoria::{bitfield::Bitfield, torrent::{Event, ConnectionEvent}, types::*};
+use crate::libvictoria::{
+    bitfield::Bitfield,
+    torrent::{ConnectionEvent, Event},
+    types::*,
+};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -403,14 +407,10 @@ impl BitTorrent {
 
         select! {
             result = reader_task => {
-                if let Err(e) = result {
-                    let _ = tx.send(Event::Connection(ConnectionEvent::Disconnected(id, e))).await;
-                }
+                let _ = tx.send(Event::Connection(ConnectionEvent::Disconnected(id, result.err()))).await;
             }
             result = writer_task => {
-                if let Err(e) = result {
-                    let _ = tx.send(Event::Connection(ConnectionEvent::Disconnected(id, e))).await;
-                }
+                let _ = tx.send(Event::Connection(ConnectionEvent::Disconnected(id, result.err()))).await;
             }
         }
     }

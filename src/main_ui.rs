@@ -66,7 +66,7 @@ impl MainUI {
                 .join("victoria"),
             client_id: PeerId::random(),
             bit_torrent_port: 6881,
-            connection_cap: 10,
+            connection_cap: 5,
 
             node_id: NodeId::random(),
             dht_port: 6881,

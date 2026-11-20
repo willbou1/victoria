@@ -93,6 +93,10 @@ impl Bitfield {
         sub
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = bool> {
+        (0..self.size).map(|i| self.is_set(i))
+    }
+
     fn count_set(&self) -> usize {
         let mut num = 0;
         for b in 0..self.len() {

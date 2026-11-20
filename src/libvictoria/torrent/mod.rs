@@ -38,13 +38,6 @@ const MAX_DISCOVERY_ATTEMPTS: usize = 3;
 const PEER_CHANNEL_CAPACITY: usize = 100;
 const EVENT_CHANNEL_CAPACITY: usize = 400;
 
-#[derive(Debug, PartialEq, Eq, Hash)]
-enum DiscoveryMechanism {
-    Tracker,
-    PEX,
-    DHT,
-}
-
 #[derive(Debug)]
 struct DiscoveryAttempt {
     info: PeerInfo,
@@ -70,7 +63,7 @@ pub(crate) enum ConnectionEvent {
         ingoing: bool,
     },
     ConnectionFailed(PeerInfo, anyhow::Error, Option<PeerId>),
-    Disconnected(PeerId, anyhow::Error),
+    Disconnected(PeerId, Option<anyhow::Error>),
 }
 
 pub(crate) enum CommandEvent {
@@ -446,19 +439,31 @@ impl Torrent {
             transfer.tick().await?;
         }
 
+        self.evict_connections();
+
         Ok(())
     }
 
     fn evict_connections(&mut self) {
+        let full = self.available_connection_slots() == 0;
         if let Some(transfer) = &mut self.transfer {
             for (id, peer) in &mut self.peers {
+                if transfer.is_connection_useless(id).unwrap_or(false) {
+                    warn!("Evicting cuz useless");
+                    transfer.sever_connection(id);
+                    peer.disconnect(None);
+                    continue;
+                }
+
                 if let PeerState::Connected { at, .. } = peer.state
+                    && full
                     && transfer
                         .connection_download_rate(id)
-                        .map(|r| r < 16 * 1024)
+                        .map(|r| r < 16. * 1024.)
                         .unwrap_or(false)
                     && at.elapsed() > Duration::from_secs(15)
                 {
+                    warn!("Evicting cuz slow");
                     transfer.sever_connection(id);
                     peer.disconnect(None);
                 }
@@ -470,7 +475,12 @@ impl Torrent {
         if self.should_connect_to_peer() {
             let available = self.available_connection_slots();
             let mut reconnect = Vec::new();
-            for peer in self.peers.values_mut() {
+            for (id, peer) in self.peers.iter_mut() {
+                let download_rate = self
+                    .transfer
+                    .as_ref()
+                    .and_then(|t| t.connection_download_rate(id))
+                    .unwrap_or(0.);
                 if let PeerState::Disconnected {
                     at,
                     interval,
@@ -480,13 +490,14 @@ impl Torrent {
                 {
                     if at.elapsed() > *interval && !*reconnecting {
                         *reconnecting = true;
-                        reconnect.push((peer.disconnects(), peer.info.clone()));
+                        reconnect.push((peer.disconnects(), download_rate, peer.info().clone()));
                     }
                 }
             }
-            reconnect.sort_by(|(a, _), (b, _)| a.total_cmp(b));
-            for (disconnects, info) in reconnect.iter().take(available) {
+            reconnect.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.total_cmp(&b.1)));
+            for (disconnects, _, info) in reconnect.iter().take(available) {
                 if *disconnects < 10. {
+                    warn!("Trying out new connection");
                     self.try_connect(&info, info.id)?;
                 }
             }
@@ -533,19 +544,12 @@ impl Torrent {
     fn discover(&mut self, info: &PeerInfo, mechanism: Option<DiscoveryMechanism>) -> Result<()> {
         match self
             .peers
-            .iter()
-            .find(|(_, c)| c.info.is_same_peer(info))
-            .clone()
+            .iter_mut()
+            .find(|(_, c)| c.info().is_same_peer(info))
         {
-            Some((id, _)) => {
+            Some((_, peer)) => {
                 if let Some(mechanism) = mechanism {
-                    self.progress_tx.send_modify(|p| {
-                        p.peers.get_mut(id).map(|peer_progress| match mechanism {
-                            DiscoveryMechanism::Tracker => peer_progress.discovery.trackers = true,
-                            DiscoveryMechanism::PEX => peer_progress.discovery.pex = true,
-                            DiscoveryMechanism::DHT => peer_progress.discovery.dht = true,
-                        });
-                    });
+                    peer.add_discovery_mechanism(mechanism);
                 }
             }
             None => {
@@ -655,6 +659,7 @@ impl Torrent {
                         )
                         .await?;
                         for (peer_id, peer) in self.peers.iter_mut() {
+                            let supports_fast = peer.supports_fast();
                             if let PeerState::Connected {
                                 tx,
                                 initial_transfer_messages,
@@ -665,7 +670,7 @@ impl Torrent {
                                     .add_connection(
                                         *peer_id,
                                         tx.clone(),
-                                        peer.supports_fast,
+                                        supports_fast,
                                         Some(initial_transfer_messages),
                                     )
                                     .await?;
@@ -704,20 +709,6 @@ impl Torrent {
     fn update_progress(&self) {
         self.progress_tx.send_modify(|p| {
             p.num_peers = self.peers.len();
-            for (id, peer) in &self.peers {
-                if let Some(peer_prog) = p.peers.get_mut(id) {
-                    peer_prog
-                        .endpoints
-                        .extend(peer.info.endpoints.iter().cloned());
-                    peer_prog.client = peer.client.clone();
-                    peer_prog.supports_dht = peer.supports_dht;
-                    peer_prog.supports_fast = peer.supports_fast;
-                    peer_prog.supports_metadata = peer.supports_metadata;
-                    peer_prog.supports_pex = peer.supports_pex;
-                    peer_prog.metadata_down_speed = peer.downloaded_metadata_this_second();
-                    peer_prog.metadata_up_speed = peer.uploaded_metadata_this_second();
-                }
-            }
             p.num_connected_peers = self
                 .peers
                 .iter()
@@ -766,33 +757,23 @@ impl Torrent {
             if let Some((_, m)) = self
                 .peers
                 .iter_mut()
-                .find(|(_, c)| c.info.is_same_peer(&peer_info))
+                .find(|(_, c)| c.info().is_same_peer(&peer_info))
             {
-                m.info.merge(peer_info.clone());
+                m.modify_info(|i| i.merge(peer_info.clone()));
             } else {
                 self.peers.insert(
                     bit_torrent.id,
                     Peer::new(
                         peer_info.clone(),
                         tx.clone(),
+                        self.progress_tx.clone(),
                         bit_torrent.supports_fast,
                         bit_torrent.supports_dht,
+                        removed
+                            .map(|r| r.mechanism)
+                            .unwrap_or(DiscoveryMechanism::Ingoing),
                     ),
                 );
-
-                self.progress_tx.send_modify(|p| {
-                    let peer_prog = p
-                        .peers
-                        .entry(bit_torrent.id)
-                        .or_insert(PeerProgress::new(bit_torrent.id));
-                    if let Some(DiscoveryAttempt { mechanism, .. }) = removed {
-                        match mechanism {
-                            DiscoveryMechanism::Tracker => peer_prog.discovery.trackers = true,
-                            DiscoveryMechanism::PEX => peer_prog.discovery.pex = true,
-                            DiscoveryMechanism::DHT => peer_prog.discovery.dht = true,
-                        }
-                    }
-                });
             }
         }
 
@@ -834,10 +815,10 @@ impl Torrent {
                 if let Some(id) = known_id {
                     debug!(peer = %peer_info, "Couldn't reconnect ({e})");
                     self.peers.entry(id).and_modify(|p| p.state.back_off());
+                    self.furnish_connections()?;
                 } else {
                     debug!(peer = %peer_info, "Couldn't discover ({e})");
                 }
-                self.furnish_connections()?;
             }
 
             Disconnected(peer_id, error) => {
@@ -845,18 +826,8 @@ impl Torrent {
                     transfer.sever_connection(&peer_id);
                 }
                 self.peers.entry(peer_id).and_modify(|p| {
-                    p.disconnect(Some(error));
-                    self.progress_tx.send_modify(|progress| {
-                        let peer_progress = progress
-                            .peers
-                            .entry(peer_id)
-                            .or_insert(PeerProgress::new(peer_id));
-                        if let PeerState::Disconnected { reason, .. } = &p.state {
-                            if let Some(reason) = reason {
-                                peer_progress.errors.push(format!("{reason:#}"));
-                            }
-                        }
-                    });
+                    debug!(peer = %p.info(), "Disconnected {error:?}");
+                    p.disconnect(error);
                 });
                 self.furnish_connections()?;
             }
@@ -937,7 +908,7 @@ impl Torrent {
                         Message::DHTPort { port } => {
                             debug!("DHT port {port}");
                             // TODO Make the DHT event carry all endpoints to try them in the DHT service
-                            let mut endpoint = peer.info.endpoints.iter().next().unwrap().clone();
+                            let mut endpoint = peer.info().endpoints.iter().next().unwrap().clone();
                             endpoint.set_port(port);
                             let _ = self.dht_tx.send(DHTEvent::FoundNode(endpoint)).await;
                         }

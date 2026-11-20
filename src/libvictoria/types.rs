@@ -307,7 +307,7 @@ impl fmt::Display for Endpoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EndpointSet(HashSet<Endpoint>);
+pub struct EndpointSet(pub HashSet<Endpoint>);
 impl EndpointSet {
     pub fn intersects(&self, other: &Self) -> bool {
         !self.0.is_disjoint(&other.0)
@@ -486,4 +486,12 @@ impl From<EndpointV6> for PeerInfo {
             id: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiscoveryMechanism {
+    PEX,
+    DHT,
+    Tracker,
+    Ingoing,
 }

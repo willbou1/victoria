@@ -4,7 +4,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use super::libvictoria::torrent::control::*;
+use super::libvictoria::{torrent::control::*, types::*};
 use super::util::*;
 use whodatrow::*;
 
@@ -149,10 +149,11 @@ impl Row for PeerProgress {
             Column {
                 header: "T P D",
                 value: |peer, _| {
+                    use DiscoveryMechanism::*;
                     [
-                        peer.discovery.trackers,
-                        peer.discovery.pex,
-                        peer.discovery.dht,
+                        peer.discovery_mechanisms.contains(&Tracker),
+                        peer.discovery_mechanisms.contains(&PEX),
+                        peer.discovery_mechanisms.contains(&DHT),
                     ]
                     .map(|ext| if ext { "■" } else { "□" })
                     .join(" ")
@@ -193,7 +194,8 @@ impl Row for PeerProgress {
                 value: |peer, width| {
                     peer.connection
                         .as_ref()
-                        .map(|c| format!("{:WIDTH$}", c.piece_bitfield, WIDTH = width.unwrap()))
+                        .and_then(|c| c.piece_bitfield.as_ref())
+                        .map(|b| format!("{:WIDTH$}", b, WIDTH = width.unwrap()))
                         .unwrap_or_default()
                 },
                 ..Column::DEFAULT

@@ -38,7 +38,7 @@ pub struct Connection {
     am_interested: bool,
     peer_choking: bool,
     peer_interested: bool,
-    piece_bitfield: Bitfield,
+    piece_bitfield: Option<Bitfield>,
 
     uploaded_this_second: usize,
 
@@ -75,7 +75,7 @@ impl Connection {
             am_interested: false,
             peer_choking: true,
             peer_interested: false,
-            piece_bitfield: Bitfield::new(num_pieces),
+            piece_bitfield: None,
 
             uploaded_this_second: 0,
             downloaded_this_second: 0,
@@ -108,7 +108,7 @@ impl Connection {
                 peer.connection = Some(ConnectionProgress {
                     down_speed: self.downloaded_this_second(),
                     up_speed: self.uploaded_this_second(),
-                    piece_bitfield: self.piece_bitfield().clone(),
+                    piece_bitfield: self.piece_bitfield.clone(),
                     am_choking: self.am_choking(),
                     am_interested: self.am_interested(),
                     peer_choking: self.peer_choking(),
@@ -143,8 +143,8 @@ impl Connection {
     pub fn piece_cursor(&self) -> Option<usize> {
         self.piece_cursor
     }
-    pub fn download_rate(&self) -> usize {
-        self.download_rate_ema.value() as usize
+    pub fn download_rate(&self) -> f64 {
+        self.download_rate_ema.value()
     }
     pub fn uploaded_this_second(&self) -> usize {
         self.uploaded_this_second
@@ -167,8 +167,8 @@ impl Connection {
     pub fn peer_interested(&self) -> bool {
         self.peer_interested
     }
-    pub fn piece_bitfield(&self) -> &Bitfield {
-        &self.piece_bitfield
+    pub fn piece_bitfield(&self) -> Option<&Bitfield> {
+        self.piece_bitfield.as_ref()
     }
 
     pub fn set_piece_cursor(&mut self, piece_cursor: Option<usize>) {
@@ -225,31 +225,32 @@ impl Connection {
         self.notify(|c| c.peer_interested = interested);
     }
 
-    pub fn set_bitfield(&mut self, bitfield: Bitfield) -> Result<()> {
-        ensure!(
-            bitfield.num_bytes() == self.piece_bitfield.num_bytes(),
-            "The received bitfield should be {} bytes long, got {}",
-            self.piece_bitfield.num_bytes(),
-            bitfield.num_bytes()
-        );
-        self.piece_bitfield.set_bytes(bitfield.as_bytes());
+    pub fn set_bitfield(&mut self, bitfield: Bitfield) {
+        self.piece_bitfield = Some(bitfield);
         self.notify(|c| c.piece_bitfield = self.piece_bitfield.clone());
-        Ok(())
+    }
+    pub fn set_full_bitfield(&mut self, num_pieces: usize) {
+        let mut bitfield = Bitfield::new(num_pieces);
+        bitfield.fill(true);
+        self.set_bitfield(bitfield);
+    }
+    pub fn set_empty_bitfield(&mut self, num_pieces: usize) {
+        let bitfield = Bitfield::new(num_pieces);
+        self.set_bitfield(bitfield);
     }
     pub fn has_piece(&self, index: usize) -> bool {
-        self.piece_bitfield.is_set(index)
+        self.piece_bitfield
+            .as_ref()
+            .map(|b| b.is_set(index))
+            .unwrap_or(false)
     }
     pub fn set_piece(&mut self, index: usize) {
-        self.piece_bitfield.set(index);
-        self.notify(|c| c.piece_bitfield.set(index));
-    }
-    pub fn set_pieces(&mut self) {
-        self.piece_bitfield.fill(true);
-        self.notify(|c| c.piece_bitfield.fill(true));
-    }
-    pub fn unset_pieces(&mut self) {
-        self.piece_bitfield.fill(false);
-        self.notify(|c| c.piece_bitfield.fill(false));
+        if let Some(piece_bitfield) = &mut self.piece_bitfield {
+            piece_bitfield.set(index);
+            self.notify(|c| {
+                c.piece_bitfield.as_mut().map(|b| b.set(index));
+            });
+        }
     }
 
     pub fn reject(&mut self) {
@@ -317,7 +318,10 @@ impl Connection {
 
     pub fn reset_stats(&mut self) {
         self.control_congestion();
-        self.download_rate_ema.update(self.downloaded_this_second as f64);
+        if self.chokes_this_second == 0 {
+            self.download_rate_ema
+                .update(self.downloaded_this_second as f64);
+        }
         self.notify(|c| {
             c.timeout_rate = self.timeouts_this_second;
             c.reject_rate = self.rejects_this_second;

@@ -17,8 +17,8 @@ use tokio::{
     sync::{Mutex, mpsc, watch},
 };
 use tokio_util::sync::CancellationToken;
+use torrent::{CommandEvent, Event, Torrent};
 use torrent::{ConnectionEvent, control::*};
-use torrent::{Event, CommandEvent, Torrent};
 use tracing::{debug, error};
 use types::*;
 

@@ -2,7 +2,10 @@ mod connection;
 mod piece_cache;
 
 use anyhow::{Result, ensure};
-use rand::{distr::{Distribution, weighted::WeightedIndex}, rng};
+use rand::{
+    distr::{Distribution, weighted::WeightedIndex},
+    rng,
+};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::SeekFrom,
@@ -164,12 +167,7 @@ impl Transfer {
         supports_fast: bool,
         initial_messages: Option<&mut VecDeque<Message>>,
     ) -> Result<()> {
-        let mut con = Connection::new(
-            peer_id,
-            tx,
-            self.progress_tx.clone(),
-            supports_fast,
-        );
+        let mut con = Connection::new(peer_id, tx, self.progress_tx.clone(), supports_fast);
         if self.piece_bitfield.num_set() == 0 && supports_fast {
             con.send(Message::HaveNone).await;
         } else if self.piece_bitfield.num_set() == self.metadata.num_pieces && supports_fast {

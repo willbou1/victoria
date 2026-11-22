@@ -38,7 +38,9 @@ while being pleasant on the eyes.
 | Contributing | ❌ |
 
 # Usage Launch the TUI:
-```bash victoria ``` 
+```bash
+cargo run --release
+```
 Torrents will be under victoria in your download folder. A default
 configuration file will also be created under your OS's config folder.
 

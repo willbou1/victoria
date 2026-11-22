@@ -110,7 +110,6 @@ impl Piece {
         }
     }
 
-
     pub fn availability(&self) -> usize {
         self.availability
     }
@@ -189,7 +188,6 @@ impl Piece {
         self.length = length;
         self.blocks = vec![Block::default(); num_blocks];
     }
-
 
     pub fn find_available_block(&mut self, peer_id: &PeerId) -> Option<usize> {
         if !self.is_available() {

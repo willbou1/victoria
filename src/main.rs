@@ -1,12 +1,12 @@
 // TODO remember to keep an eye on dead code once in a while
 #![allow(dead_code)]
 
-mod libvictoria;
-mod rows;
-mod main_ui;
-mod util;
-mod theme;
 mod config;
+mod libvictoria;
+mod main_ui;
+mod rows;
+mod theme;
+mod util;
 
 use anyhow::Result;
 use std::env;

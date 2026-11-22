@@ -1,4 +1,3 @@
-use tracing::warn;
 use anyhow::{Result, anyhow};
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 use crossterm::{
@@ -23,6 +22,7 @@ use tokio::{
     select,
     sync::watch,
 };
+use tracing::warn;
 
 use crate::config::AppConfig;
 
@@ -56,7 +56,7 @@ pub struct MainUI {
 
 impl MainUI {
     pub async fn new() -> Result<Self> {
-        let app_config  = AppConfig::read().await?;
+        let app_config = AppConfig::read().await?;
         app_config.write().await?;
         let (config_tx, config_rx) = watch::channel(Config {
             data_path: app_config.data_path,
@@ -185,8 +185,11 @@ impl MainUI {
                         torrent.toggle_sequential().await;
                     }
                     Char('p') => {
-                        if let Some((Section::Progress(ProgressSection::Files), file_section)) = section {
-                            if let Some(Focus { row: file_hash, .. }) = file_section.follow_focus() {
+                        if let Some((Section::Progress(ProgressSection::Files), file_section)) =
+                            section
+                        {
+                            if let Some(Focus { row: file_hash, .. }) = file_section.follow_focus()
+                            {
                                 if let Some((file_index, priority)) =
                                     torrent.progress().transfer.as_ref().and_then(|t| {
                                         t.files

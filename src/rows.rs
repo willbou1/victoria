@@ -5,7 +5,7 @@ use std::{
 
 use super::libvictoria::{torrent::control::*, types::*};
 use super::{theme::Theme, util::*};
-use whodatrow::{*};
+use whodatrow::*;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum ProgressSection {

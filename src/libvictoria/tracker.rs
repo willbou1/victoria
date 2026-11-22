@@ -176,7 +176,8 @@ impl Trackers {
 
             (url, result)
         }
-        .instrument(span).await
+        .instrument(span)
+        .await
     }
 
     async fn announce(&mut self, event: tracker::Event) {
@@ -215,16 +216,14 @@ impl Trackers {
                 let progress = self.progress_rx.borrow().clone();
                 let event = event.clone();
 
-                tasks.spawn(
-                    Self::announce_to_one(
-                        url,
-                        client_id,
-                        bit_torrent_port,
-                        info_hash,
-                        progress,
-                        event,
-                    ),
-                );
+                tasks.spawn(Self::announce_to_one(
+                    url,
+                    client_id,
+                    bit_torrent_port,
+                    info_hash,
+                    progress,
+                    event,
+                ));
             }
 
             while let Some(result) = tasks.join_next().await {

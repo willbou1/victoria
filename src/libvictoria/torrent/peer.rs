@@ -166,7 +166,6 @@ impl Peer {
         self.disconnects.value()
     }
 
-    
     pub fn last_download_rate(&self) -> f64 {
         self.last_download_rate
     }

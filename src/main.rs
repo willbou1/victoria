@@ -6,6 +6,7 @@ mod rows;
 mod main_ui;
 mod util;
 mod theme;
+mod config;
 
 use anyhow::Result;
 use std::env;

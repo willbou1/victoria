@@ -24,6 +24,8 @@ use tokio::{
     sync::watch,
 };
 
+use crate::config::AppConfig;
+
 use super::{
     libvictoria::{TorrentClient, torrent::control::*, types::*},
     rows::*,
@@ -54,24 +56,18 @@ pub struct MainUI {
 
 impl MainUI {
     pub async fn new() -> Result<Self> {
+        let app_config  = AppConfig::read().await?;
+        app_config.write().await?;
         let (config_tx, config_rx) = watch::channel(Config {
-            data_path: BaseDirs::new()
-                .ok_or(anyhow!("Can't get base directories"))?
-                .data_dir()
-                .join("victoria")
-                .join("torrents"),
-            download_path: UserDirs::new()
-                .ok_or(anyhow!("Can't get user directories"))?
-                .download_dir()
-                .ok_or(anyhow!("Can't find download directory"))?
-                .join("victoria"),
-            client_id: PeerId::random(),
-            bit_torrent_port: 6881,
-            connection_cap: 10,
-            discovery_cap: 100,
+            data_path: app_config.data_path,
+            download_path: app_config.download_path,
+            client_id: app_config.bit_torrent.id.parse()?,
+            bit_torrent_port: app_config.bit_torrent.port,
+            connection_cap: app_config.bit_torrent.connection_cap,
+            discovery_cap: app_config.bit_torrent.discovery_cap,
 
-            node_id: NodeId::random(),
-            dht_port: 6881,
+            node_id: app_config.dht.id.parse()?,
+            dht_port: app_config.dht.port,
         });
 
         Ok(Self {

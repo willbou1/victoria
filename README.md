@@ -26,6 +26,7 @@ while being pleasant on the eyes.
 | Piece transfer | ✅ | ✅ | ✅ | Lacks end-game and opportunistic unchoking|
 | Piece verification | ✅ | | | |
 | Sequential downloading | ✅ | | | |
+| Rarest-piece-first downloading | ✅ | | | |
 | File priorities | ✅ | | | |
 
 ## DHT
@@ -36,17 +37,15 @@ while being pleasant on the eyes.
 | Maintenance | ❌ |
 | Contributing | ❌ |
 
-# Usage
-Launch the TUI:
-```bash
-victoria
-```
-Torrents will be under victoria in your download folder.
+# Usage Launch the TUI:
+```bash victoria ``` 
+Torrents will be under victoria in your download folder. A default
+configuration file will also be created under your OS's config folder.
 
 # Building
 Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/willbou1/victoria
 cd victoria
 ```
 Build the project:

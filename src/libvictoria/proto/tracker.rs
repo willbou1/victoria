@@ -237,8 +237,8 @@ pub async fn request_http(
 
     let res = reqwest::get(format!(
         "{url}&info_hash={}&peer_id={}",
-        info_hash.encode(),
-        client_id.encode()
+        info_hash.to_string(),
+        client_id.to_string(),
     ))
     .await?;
     let body = res.bytes().await?;

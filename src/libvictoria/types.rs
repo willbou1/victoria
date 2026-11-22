@@ -36,6 +36,15 @@ macro_rules! impl_id {
                 id.0
             }
         }
+        impl std::str::FromStr for $ty {
+            type Err = hex::FromHexError;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                let mut bytes = [0u8; 20];
+                hex::decode_to_slice(s, &mut bytes)?;
+                Ok(Self(bytes))
+            }
+        }
         impl TryFrom<&[u8]> for $ty {
             type Error = std::array::TryFromSliceError;
 
@@ -68,20 +77,11 @@ macro_rules! impl_id {
 pub struct Hash(pub [u8; 20]);
 impl Hash {
     pub fn from_xt(xt: &str) -> Result<Self> {
-        let bytes: [u8; 20] = hex::decode(
-            xt.strip_prefix("urn:btih:")
-                .ok_or(anyhow!("Only the btih format is supported for xt"))?,
-        )?
-        .try_into()
-        .map_err(|_| anyhow!("Btih format requires 20 bytes"))?;
-        Ok(Self(bytes))
-    }
-
-    pub fn encode(&self) -> String {
-        self.0
-            .iter()
-            .map(|b| format!("%{b:02X}"))
-            .collect::<String>()
+        let bytes = xt
+            .strip_prefix("urn:btih:")
+            .ok_or(anyhow!("Only the btih format is supported for xt"))?
+            .parse()?;
+        Ok(bytes)
     }
 }
 impl_id!(Hash);
@@ -94,21 +94,6 @@ impl PeerId {
         bytes[0..4].copy_from_slice(CLIENT_VERSION);
         rng().fill_bytes(&mut bytes[4..]);
         Self(bytes)
-    }
-
-    pub fn to_compact(&self) -> String {
-        let id = self.0;
-        format!(
-            "{:02x}{:02x}{:02x}..{:02x}{:02x}{:02x}",
-            id[0], id[1], id[2], id[17], id[18], id[19],
-        )
-    }
-
-    pub fn encode(&self) -> String {
-        self.0
-            .iter()
-            .map(|b| format!("%{b:02X}"))
-            .collect::<String>()
     }
 }
 impl_id!(PeerId);

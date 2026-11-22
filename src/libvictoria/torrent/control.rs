@@ -7,7 +7,7 @@ use std::{
 
 use crate::libvictoria::{bitfield::Bitfield, metainfo::Metadata, types::*};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub download_path: PathBuf,
     pub data_path: PathBuf,
@@ -15,6 +15,7 @@ pub struct Config {
     pub client_id: PeerId,
     pub bit_torrent_port: u16,
     pub connection_cap: usize,
+    pub discovery_cap: usize,
 
     pub node_id: NodeId,
     pub dht_port: u16,
@@ -24,6 +25,7 @@ pub struct Config {
 pub struct PieceProgress {
     pub index: usize,
     pub num_verification_failures: usize,
+    pub availability: usize,
     pub block_bitfield: Bitfield,
 }
 

@@ -5,6 +5,7 @@ mod libvictoria;
 mod rows;
 mod main_ui;
 mod util;
+mod theme;
 
 use anyhow::Result;
 use std::env;

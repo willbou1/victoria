@@ -1,3 +1,4 @@
+use tracing::warn;
 use anyhow::{Result, anyhow};
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 use crossterm::{
@@ -66,7 +67,8 @@ impl MainUI {
                 .join("victoria"),
             client_id: PeerId::random(),
             bit_torrent_port: 6881,
-            connection_cap: 5,
+            connection_cap: 10,
+            discovery_cap: 100,
 
             node_id: NodeId::random(),
             dht_port: 6881,
@@ -187,8 +189,8 @@ impl MainUI {
                         torrent.toggle_sequential().await;
                     }
                     Char('p') => {
-                        if let Some((Section::Progress(ProgressSection::Files), _)) = section {
-                            if let Some(Focus { row: file_hash, .. }) = self.state.follow_focus() {
+                        if let Some((Section::Progress(ProgressSection::Files), file_section)) = section {
+                            if let Some(Focus { row: file_hash, .. }) = file_section.follow_focus() {
                                 if let Some((file_index, priority)) =
                                     torrent.progress().transfer.as_ref().and_then(|t| {
                                         t.files

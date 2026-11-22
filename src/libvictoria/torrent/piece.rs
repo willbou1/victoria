@@ -45,6 +45,7 @@ pub struct Piece {
     downloading_blocks: usize,
     written: bool,
     verification_failures: usize,
+    availability: usize,
     hash: Hash,
     length: usize,
     block_size: usize,
@@ -71,6 +72,7 @@ impl Piece {
             downloaded_blocks: 0,
             downloading_blocks: 0,
             verification_failures: 0,
+            availability: 0,
             written,
             hash,
             length,
@@ -100,6 +102,7 @@ impl Piece {
             downloaded_blocks: downloaded_bitfield.map(|bf| bf.num_set()).unwrap_or(0),
             downloading_blocks: 0,
             verification_failures: 0,
+            availability: 0,
             written: false,
             hash,
             length: data.len(),
@@ -107,24 +110,50 @@ impl Piece {
         }
     }
 
-    pub fn set_length_and_reset(&mut self, length: usize) {
-        let num_blocks = length.div_ceil(self.block_size);
 
-        self.downloaded_blocks = 0;
-        self.downloading_blocks = 0;
-        self.written = false;
-        self.length = length;
-        self.blocks = vec![Block::default(); num_blocks];
+    pub fn availability(&self) -> usize {
+        self.availability
     }
-
     pub fn num_blocks(&self) -> usize {
         self.blocks.len()
     }
-
     pub fn num_verification_failures(&self) -> usize {
         self.verification_failures
     }
-
+    pub fn is_active(&self) -> bool {
+        self.downloading_blocks > 0 || self.downloaded_blocks > 0
+    }
+    pub fn obtained_blocks(&self) -> usize {
+        if self.written {
+            self.num_blocks()
+        } else {
+            self.downloaded_blocks
+        }
+    }
+    pub fn is_available(&self) -> bool {
+        !self.written && (self.downloading_blocks + self.downloaded_blocks) != self.blocks.len()
+    }
+    pub fn is_downloading(&self) -> bool {
+        self.downloading_blocks != 0
+    }
+    pub fn is_downloaded(&self) -> bool {
+        self.downloaded_blocks == self.blocks.len()
+    }
+    pub fn is_written(&self) -> bool {
+        self.written
+    }
+    pub fn has_obtrined(&self, index: usize) -> bool {
+        matches!(
+            self.blocks[index].state,
+            BlockState::Downloaded(_) | BlockState::Written
+        )
+    }
+    pub fn get(&self, index: usize) -> Option<&[u8]> {
+        match &self.blocks[index].state {
+            BlockState::Downloaded(data) => Some(data),
+            _ => None,
+        }
+    }
     pub fn num_downloading(&self) -> HashMap<PeerId, usize> {
         let mut nums = HashMap::new();
         for block in &self.blocks {
@@ -137,7 +166,6 @@ impl Piece {
         }
         nums
     }
-
     pub fn who_downloading(&self, index: usize) -> Option<&PeerId> {
         if let BlockState::Downloading { peer_id, .. } = &self.blocks[index].state {
             return Some(peer_id);
@@ -145,47 +173,23 @@ impl Piece {
         None
     }
 
-    pub fn is_active(&self) -> bool {
-        self.downloading_blocks > 0 || self.downloaded_blocks > 0
+    pub fn inc_availability(&mut self) {
+        self.availability += 1;
+    }
+    pub fn dec_availability(&mut self) {
+        self.availability -= 1;
     }
 
-    pub fn obtained_blocks(&self) -> usize {
-        if self.written {
-            self.num_blocks()
-        } else {
-            self.downloaded_blocks
-        }
+    pub fn set_length_and_reset(&mut self, length: usize) {
+        let num_blocks = length.div_ceil(self.block_size);
+
+        self.downloaded_blocks = 0;
+        self.downloading_blocks = 0;
+        self.written = false;
+        self.length = length;
+        self.blocks = vec![Block::default(); num_blocks];
     }
 
-    pub fn is_available(&self) -> bool {
-        !self.written && (self.downloading_blocks + self.downloaded_blocks) != self.blocks.len()
-    }
-
-    pub fn is_downloading(&self) -> bool {
-        self.downloading_blocks != 0
-    }
-
-    pub fn is_downloaded(&self) -> bool {
-        self.downloaded_blocks == self.blocks.len()
-    }
-
-    pub fn is_written(&self) -> bool {
-        self.written
-    }
-
-    pub fn has_obtrined(&self, index: usize) -> bool {
-        matches!(
-            self.blocks[index].state,
-            BlockState::Downloaded(_) | BlockState::Written
-        )
-    }
-
-    pub fn get(&self, index: usize) -> Option<&[u8]> {
-        match &self.blocks[index].state {
-            BlockState::Downloaded(data) => Some(data),
-            _ => None,
-        }
-    }
 
     pub fn find_available_block(&mut self, peer_id: &PeerId) -> Option<usize> {
         if !self.is_available() {

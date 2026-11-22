@@ -1,4 +1,3 @@
-use anyhow::{Result, ensure};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
@@ -58,7 +57,6 @@ impl Connection {
         id: PeerId,
         tx: mpsc::Sender<Message>,
         progress_tx: watch::Sender<Progress>,
-        num_pieces: usize,
         supports_fast: bool,
     ) -> Self {
         let con = Self {
@@ -244,13 +242,15 @@ impl Connection {
             .map(|b| b.is_set(index))
             .unwrap_or(false)
     }
-    pub fn set_piece(&mut self, index: usize) {
+    pub fn set_piece(&mut self, index: usize) -> bool {
         if let Some(piece_bitfield) = &mut self.piece_bitfield {
-            piece_bitfield.set(index);
+            let set = piece_bitfield.set(index);
             self.notify(|c| {
                 c.piece_bitfield.as_mut().map(|b| b.set(index));
             });
+            return set;
         }
+        false
     }
 
     pub fn reject(&mut self) {

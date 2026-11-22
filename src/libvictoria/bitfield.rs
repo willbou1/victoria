@@ -50,11 +50,13 @@ impl Bitfield {
         self.num_set
     }
 
-    pub fn set(&mut self, index: usize) {
+    pub fn set(&mut self, index: usize) -> bool {
         if !self.is_set(index) {
             self.buffer[index / 8] |= Self::bit(index);
             self.num_set += 1;
+            return true;
         }
+        false
     }
 
     pub fn fill(&mut self, val: bool) {

@@ -2,7 +2,7 @@ mod connection;
 mod piece_cache;
 
 use anyhow::{Result, ensure};
-use rand::{rng, seq::IndexedRandom};
+use rand::{distr::{Distribution, weighted::WeightedIndex}, rng};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::SeekFrom,
@@ -102,6 +102,7 @@ impl Transfer {
                         index: p,
                         block_bitfield: piece.to_bitfield(),
                         num_verification_failures: piece.num_verification_failures(),
+                        availability: piece.availability(),
                     })
                     .collect(),
             ))
@@ -167,7 +168,6 @@ impl Transfer {
             peer_id,
             tx,
             self.progress_tx.clone(),
-            self.metadata.num_pieces,
             supports_fast,
         );
         if self.piece_bitfield.num_set() == 0 && supports_fast {
@@ -194,10 +194,7 @@ impl Transfer {
         self.connections.get(peer_id).map(|c| c.download_rate())
     }
 
-    pub fn is_connection_useless(
-        &self,
-        peer_id: &PeerId,
-    ) -> Option<bool> {
+    pub fn is_connection_useless(&self, peer_id: &PeerId) -> Option<bool> {
         self.connections.get(peer_id).map(|c| {
             c.piece_bitfield()
                 .map(|b| {
@@ -218,10 +215,23 @@ impl Transfer {
     }
 
     pub fn sever_connection(&mut self, peer_id: &PeerId) {
-        for piece in self.pieces.iter_mut() {
-            piece.reset(&peer_id);
+        if let Some(con) = self.connections.remove(peer_id) {
+            for (p, piece) in self.pieces.iter_mut().enumerate() {
+                piece.reset(&peer_id);
+                if con.has_piece(p) {
+                    piece.dec_availability();
+                }
+                self.progress_tx.send_modify(|prog| {
+                    if let Some(transfer) = &mut prog.transfer {
+                        transfer
+                            .active_pieces
+                            .iter_mut()
+                            .find(|a| a.index == p)
+                            .map(|a| a.availability = piece.availability());
+                    }
+                });
+            }
         }
-        self.connections.remove(peer_id);
     }
 
     pub async fn tick(&mut self) -> Result<()> {
@@ -283,6 +293,11 @@ impl Transfer {
                     self.piece_bitfield.num_bytes(),
                     bitfield.num_bytes()
                 );
+                self.pieces
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(p, _)| bitfield.is_set(*p))
+                    .for_each(|(_, piece)| piece.inc_availability());
                 if let Some(con) = self.connections.get_mut(peer_id) {
                     con.set_bitfield(bitfield);
                 }
@@ -291,9 +306,23 @@ impl Transfer {
             Message::Have { piece_index: index } => {
                 debug!("Got have {index}");
                 self.check_piece_index(index, "have")?;
-                self.connections
-                    .entry(*peer_id)
-                    .and_modify(|c| c.set_piece(index));
+                if let Some(true) = self
+                    .connections
+                    .get_mut(peer_id)
+                    .map(|c| c.set_piece(index))
+                {
+                    let piece = &mut self.pieces[index];
+                    piece.inc_availability();
+                    self.progress_tx.send_modify(|p| {
+                        if let Some(transfer) = &mut p.transfer {
+                            transfer
+                                .active_pieces
+                                .iter_mut()
+                                .find(|a| a.index == index)
+                                .map(|a| a.availability = piece.availability());
+                        }
+                    });
+                }
             }
 
             Message::Request {
@@ -392,6 +421,7 @@ impl Transfer {
             }
             Message::HaveAll => {
                 debug!("Got have all");
+                self.pieces.iter_mut().for_each(|p| p.inc_availability());
                 self.connections
                     .entry(*peer_id)
                     .and_modify(|c| c.set_full_bitfield(self.metadata.num_pieces));
@@ -482,21 +512,22 @@ impl Transfer {
                 });
             } else {
                 self.progress_tx.send_modify(|p| {
+                    let piece = &self.pieces[piece_index];
                     if let Some(t) = p.transfer.as_mut() {
                         if let Some(active_piece) = t
                             .active_pieces
                             .iter_mut()
                             .find(|ap| ap.index == piece_index)
                         {
-                            active_piece.block_bitfield = self.pieces[piece_index].to_bitfield();
+                            active_piece.block_bitfield = piece.to_bitfield();
                             active_piece.num_verification_failures =
-                                self.pieces[piece_index].num_verification_failures();
+                                piece.num_verification_failures();
                         } else {
                             t.active_pieces.push(PieceProgress {
                                 index: piece_index,
-                                block_bitfield: self.pieces[piece_index].to_bitfield(),
-                                num_verification_failures: self.pieces[piece_index]
-                                    .num_verification_failures(),
+                                block_bitfield: piece.to_bitfield(),
+                                num_verification_failures: piece.num_verification_failures(),
+                                availability: piece.availability(),
                             });
                         }
                     }
@@ -717,12 +748,22 @@ impl Transfer {
                         }
                     }
                 }
-                if let Some(p) = active
-                    .choose(&mut rng())
-                    .or_else(|| inactive.choose(&mut rng()))
-                    .copied()
-                {
-                    return Some(p);
+
+                let mut weights: Vec<_> = active
+                    .iter()
+                    .map(|&p| 1.0 / (self.pieces[p].availability() as f64 + 1.0))
+                    .collect();
+                if !weights.is_empty() {
+                    let dist = WeightedIndex::new(&weights).unwrap();
+                    return Some(active[dist.sample(&mut rng())]);
+                }
+                weights = inactive
+                    .iter()
+                    .map(|&p| 1.0 / (self.pieces[p].availability() as f64 + 1.0))
+                    .collect();
+                if !weights.is_empty() {
+                    let dist = WeightedIndex::new(&weights).unwrap();
+                    return Some(inactive[dist.sample(&mut rng())]);
                 }
             }
         }

@@ -1,9 +1,9 @@
-pub mod state;
 pub mod histogram;
-
-use crossterm::style::{Color, ResetColor, SetForegroundColor};
+pub mod state;
+pub mod theme;
 
 use state::*;
+use theme::Theme;
 
 fn visible_width(s: &str) -> usize {
     let bytes = s.as_bytes();
@@ -64,6 +64,7 @@ pub struct Column<R: Row> {
     pub flex: Option<usize>,
     pub total: Option<fn(&[&R]) -> String>,
     pub value: fn(&R, width: Option<usize>) -> String,
+    pub theme: Option<fn(&R) -> R::Theme>,
 }
 
 pub struct TextSubSection<R: Row> {
@@ -75,7 +76,7 @@ pub struct TextSubSection<R: Row> {
 pub struct TableSubSection<R, S>
 where
     R: Row,
-    S: Row<SectionKey = R::SectionKey> + 'static,
+    S: Row<SectionKey = R::SectionKey, Theme = R::Theme> + 'static,
 {
     pub section_key: R::SectionKey,
     pub header: &'static str,
@@ -132,7 +133,7 @@ where
 impl<R, S> SubSection<R> for TableSubSection<R, S>
 where
     R: Row,
-    S: Row<SectionKey = R::SectionKey>,
+    S: Row<SectionKey = R::SectionKey, Theme = R::Theme>,
 {
     fn header(&self) -> &'static str {
         self.header
@@ -169,6 +170,7 @@ impl<R: Row> Column<R> {
         max_width: None,
         flex: None,
         total: None,
+        theme: None,
         value: |_, _| String::new(),
     };
 }
@@ -176,6 +178,7 @@ impl<R: Row> Column<R> {
 pub type RowHash = u64;
 pub trait Row {
     type SectionKey: Copy;
+    type Theme: Theme;
 
     fn id(&self) -> RowHash;
     fn columns() -> &'static [Column<Self>]
@@ -228,12 +231,12 @@ where
         self.row
     }
 
-    fn render_color(&mut self, color: Color) {
-        self.render.push_str(&SetForegroundColor(color).to_string());
+    fn render_theme(&mut self, theme: R::Theme) {
+        self.render.push_str(&theme.apply());
     }
 
-    fn reset_color(&mut self) {
-        self.render.push_str(&ResetColor.to_string());
+    fn reset_theme(&mut self, theme: R::Theme) {
+        self.render.push_str(&theme.cleanup());
     }
 
     fn render_newline(&mut self) {
@@ -250,53 +253,51 @@ where
         self.render_n(' ', self.padding);
     }
 
-    fn render_cell(&mut self, c: usize, cell: &str, color: Color) {
+    fn render_cell(&mut self, c: usize, cell: &str, theme: R::Theme) {
         use Alignment::*;
         let width = self.widths[c];
         let aligned_cell = match self.columns[c].alignment {
             Left => format!("{cell:<width$}"),
             Right => format!("{cell:>width$}"),
         };
-        self.render_color(color);
+        self.render_theme(theme);
         self.render.push_str(&aligned_cell);
-        self.reset_color();
+        self.reset_theme(theme);
     }
 
     fn render_sub_sections(&mut self, state: &mut RowState<R::SectionKey>) -> usize {
         let start = self.render.len();
-        self.render_color(if self.focused {
-            Color::Green
+        let theme = if self.focused {
+            R::Theme::SELECTED
         } else {
-            Color::White
-        });
+            R::Theme::NORMAL
+        };
+        self.render_theme(theme);
         self.render.push('┤');
-        self.reset_color();
+        self.reset_theme(theme);
         self.render.push(' ');
         let mut col = self.col + self.padding + 2;
         for (s, section) in R::sub_sections().iter().enumerate() {
-            self.render_color(if state.show_sections[s] {
-                Color::Green
+            let theme = if state.show_sections[s] {
+                R::Theme::SELECTED
             } else {
-                Color::White
-            });
+                R::Theme::NORMAL
+            };
+            self.render_theme(theme);
             self.render.push('[');
             self.render.push(section.key());
             self.render.push(']');
             self.render.push(' ');
             self.render.push_str(section.header());
             self.render.push(' ');
-            self.reset_color();
+            self.reset_theme(theme);
             let width = section.header().chars().count() + 4;
             state.place_section(s, col, self.row, width, 1);
             col += width + 1;
         }
-        self.render_color(if self.focused {
-            Color::Green
-        } else {
-            Color::White
-        });
+        self.render_theme(theme);
         self.render.push('├');
-        self.reset_color();
+        self.reset_theme(theme);
         visible_width(&self.render[start..self.render.len()])
     }
 
@@ -319,23 +320,20 @@ where
         state: Option<&mut RowState<R::SectionKey>>,
     ) {
         let (left, junction_char, right) = Self::junction_chars(junction);
-        self.render_color(if self.focused {
-            Color::Green
+        let theme = if self.focused {
+            R::Theme::SELECTED
         } else {
-            Color::White
-        });
+            R::Theme::NORMAL
+        };
+        self.render_theme(theme);
         self.render.push(left);
         let mut sections_len = self.padding;
         self.render_n('─', self.padding);
-        self.reset_color();
+        self.reset_theme(theme);
         if let Junction::SubTop = junction {
             sections_len += self.render_sub_sections(state.unwrap());
         }
-        self.render_color(if self.focused {
-            Color::Green
-        } else {
-            Color::White
-        });
+        self.render_theme(theme);
         let mut end = 0;
         for (c, &width) in self.widths.clone().iter().enumerate() {
             end += self.padding * 2 + width;
@@ -348,20 +346,21 @@ where
             }
         }
         self.render.push(right);
-        self.reset_color();
+        self.reset_theme(theme);
         self.render_newline();
     }
 
     fn render_v_separator(&mut self, marked: bool) {
-        self.render_color(if marked && self.focused {
-            Color::Magenta
+        let theme = if marked && self.focused {
+            R::Theme::MARKED
         } else if self.focused {
-            Color::Green
+            R::Theme::SELECTED
         } else {
-            Color::White
-        });
+            R::Theme::NORMAL
+        };
+        self.render_theme(theme);
         self.render.push('│');
-        self.reset_color();
+        self.reset_theme(theme);
     }
 
     fn render_sub(&mut self, width: usize, row: &R, state: &mut RowState<R::SectionKey>) {
@@ -390,11 +389,11 @@ where
         }
     }
 
-    fn render_cells(&mut self, cells: &[String], color: Color, marked: bool) {
+    fn render_cells(&mut self, cells: &[String], themes: &[R::Theme], marked: bool) {
         self.render_v_separator(marked);
         for c in 0..self.columns.len() {
             self.render_padding();
-            self.render_cell(c, &cells[c], color);
+            self.render_cell(c, &cells[c], themes[c]);
             self.render_padding();
             self.render_v_separator(marked);
         }
@@ -448,7 +447,12 @@ where
 
         let natural_widths: Vec<usize> = filled_columns
             .iter()
-            .map(|fc| fc.iter().map(|cell| visible_width(cell)).max().unwrap_or(0))
+            .map(|fc| {
+                fc.iter()
+                    .map(|cell| cell.chars().count())
+                    .max()
+                    .unwrap_or(0)
+            })
             .collect();
 
         let taken_width: usize = natural_widths
@@ -495,7 +499,7 @@ where
                 .iter()
                 .map(|c| c.header.to_string())
                 .collect::<Vec<_>>(),
-            Color::Red,
+            &vec![R::Theme::HEADER; R::columns().len()],
             false,
         );
         self.render_h_sparator(Junction::Center, None);
@@ -503,19 +507,23 @@ where
         for (r, row) in rows.iter().enumerate() {
             let first_row = self.row;
             let row_state = state.row_states.get_mut(&row.id()).unwrap();
+            let theme = if let Some(hash) = state.selected_row
+                && hash == row.id()
+                && self.focused
+            {
+                R::Theme::SELECTED
+            } else {
+                R::Theme::NORMAL
+            };
             self.render_cells(
                 &filled_columns
                     .iter()
                     .map(|c| c[r + 1].clone())
                     .collect::<Vec<_>>(),
-                if let Some(hash) = state.selected_row
-                    && hash == row.id()
-                    && self.focused
-                {
-                    Color::Green
-                } else {
-                    Color::White
-                },
+                &R::columns()
+                    .iter()
+                    .map(|c| c.theme.map(|t| t(row)).unwrap_or(theme))
+                    .collect::<Vec<_>>(),
                 row_state.marked,
             );
             if row_state.show_sub {
@@ -546,7 +554,7 @@ where
                     .iter()
                     .map(|c| c[rows.len() + 1].clone())
                     .collect::<Vec<_>>(),
-                Color::Yellow,
+                &vec![R::Theme::TOTAL; R::columns().len()],
                 false,
             );
             self.render_h_sparator(Junction::Bottom, None);

@@ -90,7 +90,7 @@ pub struct Peer {
     downloaded_metadata_this_second: usize,
     uploaded_metadata_this_second: usize,
 
-    last_download_rate: usize,
+    last_download_rate: f64,
 }
 
 impl Peer {
@@ -124,7 +124,7 @@ impl Peer {
             },
             discovery_mechanisms: HashSet::from([discovery_mechanism]),
 
-            last_download_rate: 0,
+            last_download_rate: 0.,
         };
         peer.init_progress();
         peer
@@ -166,6 +166,10 @@ impl Peer {
         self.disconnects.value()
     }
 
+    
+    pub fn last_download_rate(&self) -> f64 {
+        self.last_download_rate
+    }
     pub fn uploaded_metadata_this_second(&self) -> usize {
         self.uploaded_metadata_this_second
     }
@@ -234,12 +238,13 @@ impl Peer {
         }
     }
 
-    pub fn disconnect(&mut self, reason: Option<anyhow::Error>) {
+    pub fn disconnect(&mut self, download_rate: f64, reason: Option<anyhow::Error>) {
         self.disconnects.change(|d| d + 1.);
         if let Some(reason) = &reason {
             self.notify(|p| p.errors.push(format!("{reason:#}")));
         }
         self.state.disconnect(reason);
+        self.last_download_rate = download_rate;
     }
 
     pub async fn send(&self, msg: Message) {

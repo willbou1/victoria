@@ -215,7 +215,6 @@ impl TorrentClient {
                                 bit_torrent,
                                 peer_info,
                                 known_id: None,
-                                ingoing: true,
                             }
                         )).await;
                     }

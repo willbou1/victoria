@@ -1,12 +1,11 @@
-use crossterm::style::Stylize;
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
 };
 
 use super::libvictoria::{torrent::control::*, types::*};
-use super::util::*;
-use whodatrow::*;
+use super::{theme::Theme, util::*};
+use whodatrow::{*};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum ProgressSection {
@@ -23,6 +22,7 @@ pub enum Section {
 
 impl Row for TrackerInfo {
     type SectionKey = Section;
+    type Theme = Theme;
 
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();
@@ -135,6 +135,7 @@ impl Row for TrackerInfo {
 
 impl Row for PeerProgress {
     type SectionKey = Section;
+    type Theme = Theme;
 
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();
@@ -324,6 +325,7 @@ impl Row for PeerProgress {
 
 impl Row for FileInfo {
     type SectionKey = Section;
+    type Theme = Theme;
 
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();
@@ -379,6 +381,7 @@ impl Row for FileInfo {
 
 impl Row for PieceProgress {
     type SectionKey = Section;
+    type Theme = Theme;
 
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();
@@ -421,16 +424,22 @@ impl Row for PieceProgress {
                 ..Column::DEFAULT
             },
             Column {
-                header: "X",
+                header: "AV",
                 alignment: Right,
-                value: |piece, _| {
-                    let num = piece.num_verification_failures;
-                    if num > 0 {
-                        num.to_string().red().to_string()
+                value: |piece, _| piece.availability.to_string(),
+                ..Column::DEFAULT
+            },
+            Column {
+                header: "VF",
+                alignment: Right,
+                value: |piece, _| piece.num_verification_failures.to_string(),
+                theme: Some(|piece| {
+                    if piece.num_verification_failures > 0 {
+                        Theme::Base(9)
                     } else {
-                        num.to_string()
+                        Theme::Base(7)
                     }
-                },
+                }),
                 ..Column::DEFAULT
             },
         ]
@@ -439,6 +448,7 @@ impl Row for PieceProgress {
 
 impl Row for Progress {
     type SectionKey = Section;
+    type Theme = Theme;
 
     fn id(&self) -> RowHash {
         let mut hasher = DefaultHasher::new();

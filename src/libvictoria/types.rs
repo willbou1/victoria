@@ -122,7 +122,7 @@ impl NodeId {
 }
 impl_id!(NodeId);
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct EndpointV4(pub SocketAddrV4);
 impl EndpointV4 {
     pub fn from_str(s: &str, port: u16) -> Option<Self> {
@@ -161,7 +161,7 @@ impl fmt::Display for EndpointV4 {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct EndpointV6(pub SocketAddrV6);
 impl EndpointV6 {
     pub fn from_str(s: &str, port: u16) -> Option<Self> {
@@ -218,6 +218,20 @@ impl From<std::net::SocketAddr> for Endpoint {
 }
 
 impl Endpoint {
+    pub fn v6(&self) -> Option<&Self> {
+        match self {
+            Self::V6(_) => Some(self),
+            _ => None,
+        }
+    }
+
+    pub fn v4(&self) -> Option<&Self> {
+        match self {
+            Self::V4(_) => Some(self),
+            _ => None,
+        }
+    }
+
     pub fn from_str(s: &str, port: u16) -> Self {
         if let Some(e4) = EndpointV4::from_str(s, port) {
             Self::V4(e4)

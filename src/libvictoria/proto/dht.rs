@@ -15,41 +15,124 @@ use crate::libvictoria::types::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInfo {
     pub id: NodeId,
-    pub endpoint: Endpoint,
+    pub endpoints: EndpointSet,
 }
 
 impl NodeInfo {
-    pub fn from_compact(compact: &[u8]) -> Result<Self> {
+    pub fn is_same(&self, other: &Self) -> bool {
+        self.id == other.id || self.endpoints.intersects(&other.endpoints)
+    }
+
+    pub fn merge(&mut self, other: Self) {
+        self.endpoints.merge(other.endpoints);
+    }
+
+    pub fn from_compact_4(compact: &[u8]) -> Result<Self> {
         if compact.len() != 26 {
-            return Err(anyhow!("a compact node needs to be 26 bytes long"));
+            return Err(anyhow!("a compact4 node needs to be 26 bytes long"));
         }
         Ok(Self {
             id: NodeId(compact[0..20].try_into().unwrap()),
-            endpoint: Endpoint::from_compact_4(&compact[20..26])?,
+            endpoints: Endpoint::from_compact_4(&compact[20..26])?.into(),
         })
     }
 
-    pub fn from_compact_list(compact: &[u8]) -> Result<Vec<Self>> {
-        if !compact.len().is_multiple_of(26) {
-            return Err(anyhow!(
-                "a list of compact nodes need to be divisible by 26"
-            ));
+    pub fn from_compact_6(compact: &[u8]) -> Result<Self> {
+        if compact.len() != 38 {
+            return Err(anyhow!("a compact6 node needs to be 26 bytes long"));
         }
-        Ok(compact
-            .chunks_exact(26)
-            .map(|c| Self::from_compact(c).unwrap())
-            .collect())
+        Ok(Self {
+            id: NodeId(compact[0..20].try_into().unwrap()),
+            endpoints: Endpoint::from_compact_6(&compact[20..38])?.into(),
+        })
     }
 
-    pub fn to_compact(&self) -> Vec<u8> {
-        let mut compact = Vec::new();
-        compact.extend(self.id.as_ref());
-        if let Endpoint::V4(v4) = &self.endpoint {
-            compact.extend(v4.to_compact());
-        } else {
-            panic!("a compact node should only have an IPV4");
+    pub fn from_compact_lists(
+        compact4s: Option<&[u8]>,
+        compact6s: Option<&[u8]>,
+    ) -> Result<Vec<Self>> {
+        let mut infos = Vec::new();
+        if let Some(compact4s) = compact4s {
+            if !compact4s.len().is_multiple_of(26) {
+                return Err(anyhow!(
+                    "a list of compact4 nodes need to be divisible by 26, got {}",
+                    compact4s.len(),
+                ));
+            }
+            for info in compact4s
+                .chunks_exact(26)
+                .map(|c| Self::from_compact_4(c).unwrap())
+            {
+                if let Some(present) = infos.iter_mut().find(|i| i.is_same(&info)) {
+                    present.merge(info);
+                } else {
+                    infos.push(info);
+                }
+            }
         }
-        compact
+        if let Some(compact6s) = compact6s {
+            if !compact6s.len().is_multiple_of(38) {
+                return Err(anyhow!(
+                    "a list of compact6 nodes need to be divisible by 38, got {}",
+                    compact6s.len(),
+                ));
+            }
+            for info in compact6s
+                .chunks_exact(38)
+                .map(|c| Self::from_compact_6(c).unwrap())
+            {
+                if let Some(present) = infos.iter_mut().find(|i| i.is_same(&info)) {
+                    present.merge(info);
+                } else {
+                    infos.push(info);
+                }
+            }
+        }
+        Ok(infos)
+    }
+
+    pub fn v4(&self) -> Option<EndpointV4> {
+        for endpoint in self.endpoints.iter() {
+            match endpoint {
+                Endpoint::V4(v4) => {
+                    return Some(*v4);
+                }
+                _ => (),
+            }
+        }
+        None
+    }
+
+    pub fn v6(&self) -> Option<EndpointV6> {
+        for endpoint in self.endpoints.iter() {
+            match endpoint {
+                Endpoint::V6(v6) => {
+                    return Some(*v6);
+                }
+                _ => (),
+            }
+        }
+        None
+    }
+
+    pub fn to_compact_4(&self) -> Option<Vec<u8>> {
+        if let Some(v4) = self.v4() {
+            let mut compact = Vec::new();
+            compact.extend(self.id.as_ref());
+            compact.extend(v4.to_compact());
+            return Some(compact);
+        }
+        None
+    }
+
+    pub fn to_compact_6(&self) -> Option<Vec<u8>> {
+        if let Some(v6) = self.v6() {
+            let mut compact = Vec::new();
+            compact.extend(self.id.as_ref());
+            compact.extend(v6.to_compact());
+            return Some(compact);
+        }
+        None
     }
 }
 
@@ -76,13 +159,13 @@ impl Message {
         })
     }
 
-    pub fn to_bytes(self) -> Vec<u8> {
+    pub fn to_bytes(self, v6: bool) -> Vec<u8> {
         use BencodeValue::*;
         let mut key_vals = HashMap::from([(b"t".into(), ByteString(self.transaction_id))]);
         if let Some(client_version) = self.client_version {
             key_vals.insert(b"v".into(), ByteString(client_version.to_vec()));
         }
-        self.type_of.fill_bencode(&mut key_vals);
+        self.type_of.fill_bencode(&mut key_vals, v6);
         Dictionary(key_vals).to_bytes()
     }
 }
@@ -128,7 +211,7 @@ impl MessageType {
         })
     }
 
-    pub fn from_bencode(root: &BencodeAccessor) -> Result<Self> {
+    pub fn from_bencode(root: &BencodeAccessor, v6: bool) -> Result<Self> {
         let y = root.required(b"y")?;
         Ok(match y.to_char()? {
             'q' => Self::Query {
@@ -138,7 +221,7 @@ impl MessageType {
             'r' => match (root.optional(b"r")?, root.optional(b"e")?) {
                 (Some(response), None) => Self::Response {
                     id: NodeId(response.required(b"id")?.to_n_bytes()?),
-                    response: Response::from_bencode(&response)?,
+                    response: Response::from_bencode(&response, v6)?,
                 },
                 (None, Some(error)) => Self::from_error_bencode(error)?,
                 _ => root.err_out(anyhow!(
@@ -150,7 +233,7 @@ impl MessageType {
         })
     }
 
-    pub fn fill_bencode(self, key_vals: &mut HashMap<Vec<u8>, BencodeValue>) {
+    pub fn fill_bencode(self, key_vals: &mut HashMap<Vec<u8>, BencodeValue>, v6: bool) {
         use BencodeValue::*;
         match self {
             Self::Error { code, message } => {
@@ -169,9 +252,63 @@ impl MessageType {
             }
             Self::Response { id, response } => {
                 key_vals.insert(b"y".into(), ByteString(b"r".to_vec()));
-                key_vals.insert(b"r".into(), response.to_bencode(id));
+                key_vals.insert(b"r".into(), response.to_bencode(id, v6));
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WantNodes {
+    pub nodes4: bool,
+    pub nodes6: bool,
+}
+
+impl Default for WantNodes {
+    fn default() -> Self {
+        Self {
+            nodes4: false,
+            nodes6: false,
+        }
+    }
+}
+
+impl WantNodes {
+    pub fn new(nodes4: bool, nodes6: bool) -> Self {
+        Self { nodes4, nodes6 }
+    }
+
+    pub fn from_bencode(want: Option<BencodeAccessor>) -> Result<Self> {
+        let mut want_nodes = Self::default();
+        Ok(match want {
+            Some(want) => {
+                let list = want.as_str_list()?;
+                match (list.contains(&"n4"), list.contains(&"n6")) {
+                    (false, false) => want.err_out(anyhow!("must contain at least n4 or n6"))?,
+                    (n4, n6) => {
+                        want_nodes.nodes4 = n4;
+                        want_nodes.nodes6 = n6;
+                    }
+                }
+                want_nodes
+            }
+            None => want_nodes,
+        })
+    }
+
+    pub fn to_bencode(&self) -> Option<BencodeValue> {
+        use BencodeValue::*;
+        if !self.nodes4 && !self.nodes6 {
+            return None;
+        }
+        let mut want = Vec::new();
+        if self.nodes4 {
+            want.push(ByteString(b"n4".to_vec()));
+        }
+        if self.nodes6 {
+            want.push(ByteString(b"n6".to_vec()));
+        }
+        Some(List(want))
     }
 }
 
@@ -186,9 +323,11 @@ pub enum Query {
     },
     GetPeers {
         info_hash: Hash,
+        want_nodes: WantNodes,
     },
     FindNode {
         target: NodeId,
+        want_nodes: WantNodes,
     },
 }
 
@@ -200,9 +339,11 @@ impl Query {
             "ping" => Self::Ping,
             "find_node" => Self::FindNode {
                 target: NodeId(params.required(b"target")?.to_n_bytes()?),
+                want_nodes: WantNodes::from_bencode(params.optional(b"want")?)?,
             },
             "get_peers" => Self::GetPeers {
                 info_hash: Hash(params.required(b"info_hash")?.to_n_bytes()?),
+                want_nodes: WantNodes::from_bencode(params.optional(b"want")?)?,
             },
             "announce_peer" => Self::AnnouncePeer {
                 info_hash: Hash(params.required(b"info_hash")?.to_n_bytes()?),
@@ -221,13 +362,22 @@ impl Query {
             Self::Ping => {
                 key_vals.insert(b"q".into(), ByteString(b"ping".to_vec()));
             }
-            Self::FindNode { target } => {
+            Self::FindNode { target, want_nodes } => {
                 key_vals.insert(b"q".into(), ByteString(b"find_node".to_vec()));
                 params.insert(b"target".into(), ByteString(target.to_vec()));
+                if let Some(want) = want_nodes.to_bencode() {
+                    params.insert(b"want".into(), want);
+                }
             }
-            Self::GetPeers { info_hash } => {
+            Self::GetPeers {
+                info_hash,
+                want_nodes,
+            } => {
                 key_vals.insert(b"q".into(), ByteString(b"get_peers".to_vec()));
                 params.insert(b"info_hash".into(), ByteString(info_hash.to_vec()));
+                if let Some(want) = want_nodes.to_bencode() {
+                    params.insert(b"want".into(), want);
+                }
             }
             Self::AnnouncePeer {
                 implied_port,
@@ -253,30 +403,53 @@ impl Query {
 pub struct Response {
     pub token: Option<Vec<u8>>,
     pub nodes: Option<Vec<NodeInfo>>,
-    pub values: Option<Vec<EndpointV4>>,
+    pub values: Option<Vec<Endpoint>>,
 }
 
 impl Response {
-    pub fn from_bencode(response: &BencodeAccessor) -> Result<Self> {
+    pub fn from_bencode(response: &BencodeAccessor, v6: bool) -> Result<Self> {
         Ok(Self {
             token: response.map_optional(b"token", |token| token.to_bytes())?,
             values: response.map_optional(b"values", |values| {
-                values.map_list(|value| Ok(EndpointV4::from_compact(value.as_n_bytes()?)))
+                values.map_list(|value| {
+                    Ok(if v6 {
+                        Endpoint::V6(EndpointV6::from_compact(value.as_n_bytes()?))
+                    } else {
+                        Endpoint::V4(EndpointV4::from_compact(value.as_n_bytes()?))
+                    })
+                })
             })?,
-            nodes: response.map_optional(b"nodes", |nodes| {
-                NodeInfo::from_compact_list(nodes.as_bytes()?).map_err(|e| nodes.wrap_err(e))
-            })?,
+            nodes: match (
+                response.map_optional(b"nodes", |n| n.as_bytes())?,
+                response.map_optional(b"nodes6", |n| n.as_bytes())?,
+            ) {
+                (None, None) => None,
+                (nodes, nodes6) => Some(
+                    NodeInfo::from_compact_lists(nodes, nodes6)
+                        .or_else(|_| NodeInfo::from_compact_lists(None, nodes))?,
+                ),
+            },
         })
     }
 
-    pub fn to_bencode(self, id: NodeId) -> BencodeValue {
+    pub fn to_bencode(self, id: NodeId, v6: bool) -> BencodeValue {
         use BencodeValue::*;
         let mut response = HashMap::from([(b"id".into(), ByteString(id.to_vec()))]);
         if let Some(nodes) = self.nodes {
-            response.insert(
-                b"nodes".into(),
-                ByteString(nodes.iter().flat_map(|n| n.to_compact()).collect()),
-            );
+            let nodes4: Vec<_> = nodes.iter().filter_map(|n| n.to_compact_4()).collect();
+            let nodes6: Vec<_> = nodes.iter().filter_map(|n| n.to_compact_6()).collect();
+            if !nodes4.is_empty() {
+                response.insert(
+                    b"nodes".into(),
+                    ByteString(nodes4.into_iter().flatten().collect()),
+                );
+            }
+            if !nodes6.is_empty() {
+                response.insert(
+                    b"nodes6".into(),
+                    ByteString(nodes6.into_iter().flatten().collect()),
+                );
+            }
         }
         if let Some(values) = self.values {
             response.insert(
@@ -284,7 +457,11 @@ impl Response {
                 List(
                     values
                         .iter()
-                        .map(|v| ByteString(v.to_compact().into()))
+                        .filter_map(|v| match v {
+                            Endpoint::V4(e) if !v6 => Some(ByteString(e.to_compact().into())),
+                            Endpoint::V6(e) if v6 => Some(ByteString(e.to_compact().into())),
+                            _ => None,
+                        })
                         .collect(),
                 ),
             );
@@ -320,11 +497,11 @@ impl DHT {
         let message = Message::from_bytes(
             &self.buffer[..size],
             |root, message_type, transaction_id| match message_type {
-                'q' => MessageType::from_bencode(root),
+                'q' => MessageType::from_bencode(root, addr.is_ipv6()),
                 'r' | 'e' => match self.queries.remove(transaction_id) {
                     Some(query) => {
                         ret_query = Some(query.clone());
-                        MessageType::from_bencode(root)
+                        MessageType::from_bencode(root, addr.is_ipv6())
                     }
                     .context(format!("Associated with {query:?}")),
                     None => Err(anyhow!("Reply to unsolicited messag")),
@@ -338,6 +515,7 @@ impl DHT {
     pub async fn query(&mut self, endpoint: &Endpoint, query: Query) -> Result<()> {
         let transaction_id: [u8; 2] = rng().random();
         self.queries.insert(transaction_id.to_vec(), query.clone());
+        let addr = endpoint.resolve().await?;
         self.socket4
             .send_to(
                 &Message {
@@ -348,8 +526,8 @@ impl DHT {
                         query: query.clone(),
                     },
                 }
-                .to_bytes(),
-                endpoint.resolve().await?,
+                .to_bytes(addr.is_ipv6()),
+                addr,
             )
             .await?;
         Ok(())
@@ -361,6 +539,7 @@ impl DHT {
         transaction_id: Vec<u8>,
         response: Response,
     ) -> Result<()> {
+        let addr = endpoint.resolve().await?;
         self.socket4
             .send_to(
                 &Message {
@@ -371,8 +550,8 @@ impl DHT {
                         response,
                     },
                 }
-                .to_bytes(),
-                endpoint.resolve().await?,
+                .to_bytes(addr.is_ipv6()),
+                addr,
             )
             .await?;
         Ok(())

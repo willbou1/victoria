@@ -102,7 +102,7 @@ impl Peer {
         progress_tx: watch::Sender<Progress>,
         supports_fast: bool,
         supports_dht: bool,
-        discovery_mechanism: DiscoveryMechanism,
+        discovery_mechanisms: HashSet<DiscoveryMechanism>,
     ) -> Self {
         let peer = Self {
             client: None,
@@ -122,7 +122,7 @@ impl Peer {
                 interval: MIN_RECONNECTION_INTERVAL,
                 reason: None,
             },
-            discovery_mechanisms: HashSet::from([discovery_mechanism]),
+            discovery_mechanisms,
 
             last_download_rate: 0.,
         };
@@ -202,6 +202,12 @@ impl Peer {
         self.discovery_mechanisms.insert(mechanism);
         self.notify(|p| {
             p.discovery_mechanisms.insert(mechanism);
+        });
+    }
+    pub fn add_discovery_mechanisms(&mut self, mechanisms: &[DiscoveryMechanism]) {
+        self.discovery_mechanisms.extend(mechanisms);
+        self.notify(|p| {
+            p.discovery_mechanisms.extend(mechanisms);
         });
     }
 

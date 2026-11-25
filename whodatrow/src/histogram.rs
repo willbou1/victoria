@@ -1,4 +1,4 @@
-use crossterm::style::Stylize;
+use super::theme::{Theme, HistogramTheme};
 
 pub struct Histogram {
     height: usize,
@@ -9,7 +9,7 @@ impl Histogram {
         Self { height }
     }
 
-    pub fn render(&self, mut data: Vec<usize>, width: usize) -> String {
+    pub fn render<T: HistogramTheme>(&self, mut data: Vec<usize>, width: usize) -> String {
         const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         let mut rendered = String::new();
 
@@ -54,19 +54,10 @@ impl Histogram {
                 let d = (num_div * *v).checked_div(max).unwrap_or(0);
                 let d_sub = (d as i32 - d_lower as i32).clamp(0, 8);
                 let block = BLOCKS[d_sub as usize];
-                let colored = if *v == 0 {
-                    block.dark_grey()
-                } else if *v * 4 < max {
-                    block.blue()
-                } else if *v * 2 < max {
-                    block.green()
-                } else if *v * 4 < max * 3 {
-                    block.yellow()
-                } else {
-                    block.red()
-                }
-                .to_string();
-                rendered.extend(std::iter::repeat_n(colored, bar_width));
+                let theme = T::shade(*v as f64 / max as f64);
+                rendered.push_str(&T::apply(&theme));
+                rendered.extend(std::iter::repeat_n(block, bar_width));
+                rendered.push_str(&T::cleanup(&theme));
             }
 
             rendered.extend(std::iter::repeat_n(' ', remaining));

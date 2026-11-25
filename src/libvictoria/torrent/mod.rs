@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use rand::seq::SliceRandom;
 use sha1::{Digest, Sha1};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -40,14 +40,14 @@ const MAX_DISCOVERY_ATTEMPTS: usize = 3;
 struct Discovery {
     info: PeerInfo,
     num_attempts: usize,
-    mechanism: DiscoveryMechanism,
+    mechanisms: HashSet<DiscoveryMechanism>,
 }
 
 impl Discovery {
     fn new(info: PeerInfo, mechanism: DiscoveryMechanism) -> Self {
         Self {
             info,
-            mechanism,
+            mechanisms: HashSet::from([mechanism]),
             num_attempts: 1,
         }
     }
@@ -579,16 +579,19 @@ impl Torrent {
                     .discoveries
                     .iter()
                     .position(|a| a.info.is_same_peer(info));
-                if let Some(idx) = idx
-                    && mechanism.is_none()
-                {
-                    // This is only valid if the discovery is truly a retry... ask how I know SMH
-                    if self.discoveries[idx].num_attempts < MAX_DISCOVERY_ATTEMPTS {
-                        self.discoveries[idx].num_attempts += 1;
-                        self.try_connect(info, None)?;
+                if let Some(idx) = idx {
+                    if let Some(mechanism) = mechanism {
+                        // Not a retry so let's just add the mechanism
+                        self.discoveries[idx].mechanisms.insert(mechanism);
                     } else {
-                        self.discoveries.remove(idx);
-                        self.furnish_discoveries()?;
+                        // This is only valid if the discovery is truly a retry... ask how I know SMH
+                        if self.discoveries[idx].num_attempts < MAX_DISCOVERY_ATTEMPTS {
+                            self.discoveries[idx].num_attempts += 1;
+                            self.try_connect(info, None)?;
+                        } else {
+                            self.discoveries.remove(idx);
+                            self.furnish_discoveries()?;
+                        }
                     }
                 } else if let Some(mechanism) = mechanism
                     && idx.is_none()
@@ -597,14 +600,23 @@ impl Torrent {
                         .iter()
                         .all(|q| !q.info.is_same_peer(info))
                 {
-                    let discovery_cap = self.config_rx.borrow().discovery_cap;
-                    if self.discoveries.len() < discovery_cap {
-                        self.discoveries
-                            .push(Discovery::new(info.clone(), mechanism));
-                        self.try_connect(info, None)?;
+                    if let Some(queued) = self
+                        .queued_discoveries
+                        .iter_mut()
+                        .find(|q| q.info.is_same_peer(info))
+                    {
+                        // Already queued so let's just add the mechanism
+                        queued.mechanisms.insert(mechanism);
                     } else {
-                        self.queued_discoveries
-                            .push_back(Discovery::new(info.clone(), mechanism));
+                        let discovery_cap = self.config_rx.borrow().discovery_cap;
+                        if self.discoveries.len() < discovery_cap {
+                            self.discoveries
+                                .push(Discovery::new(info.clone(), mechanism));
+                            self.try_connect(info, None)?;
+                        } else {
+                            self.queued_discoveries
+                                .push_back(Discovery::new(info.clone(), mechanism));
+                        }
                     }
                 }
             }
@@ -803,8 +815,8 @@ impl Torrent {
                         bit_torrent.supports_fast,
                         bit_torrent.supports_dht,
                         removed
-                            .map(|r| r.mechanism)
-                            .unwrap_or(DiscoveryMechanism::Ingoing),
+                            .map(|r| r.mechanisms)
+                            .unwrap_or(HashSet::from([DiscoveryMechanism::Ingoing])),
                     ),
                 );
             }
@@ -814,9 +826,13 @@ impl Torrent {
             return Ok(());
         }
 
-        self.peers
-            .entry(bit_torrent.id)
-            .and_modify(|p| p.state.connect(tx.clone()));
+        if let Some(peer) = self.peers.get_mut(&bit_torrent.id) {
+            peer.state.connect(tx.clone());
+            if bit_torrent.supports_dht {
+                let port = self.config_rx.borrow().dht_port;
+                peer.send(Message::DHTPort { port }).await;
+            }
+        }
         if let Some(transfer) = &mut self.transfer {
             transfer
                 .add_connection(peer_info.id.unwrap(), tx, bit_torrent.supports_fast, None)
@@ -941,10 +957,9 @@ impl Torrent {
 
                         Message::DHTPort { port } => {
                             debug!("DHT port {port}");
-                            // TODO Make the DHT event carry all endpoints to try them in the DHT service
-                            let mut endpoint = peer.info().endpoints.iter().next().unwrap().clone();
-                            endpoint.set_port(port);
-                            let _ = self.dht_tx.send(DHTEvent::FoundNode(endpoint)).await;
+                            let mut endpoints = peer.info().endpoints.clone();
+                            endpoints.iter().for_each(|e| e.set_port(port));
+                            let _ = self.dht_tx.send(DHTEvent::FoundNode(endpoints)).await;
                         }
 
                         Message::Unsupported { type_byte } => {

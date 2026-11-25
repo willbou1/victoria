@@ -37,7 +37,8 @@ while being pleasant on the eyes.
 | Maintenance | ❌ |
 | Contributing | ❌ |
 
-# Usage Launch the TUI:
+# Usage
+Launch the TUI:
 ```bash
 cargo run --release
 ```

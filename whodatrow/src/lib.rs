@@ -3,7 +3,7 @@ pub mod state;
 pub mod theme;
 
 use state::*;
-use theme::Theme;
+use theme::{TableTheme, Theme};
 
 fn visible_width(s: &str) -> usize {
     let bytes = s.as_bytes();
@@ -178,7 +178,7 @@ impl<R: Row> Column<R> {
 pub type RowHash = u64;
 pub trait Row {
     type SectionKey: Copy;
-    type Theme: Theme;
+    type Theme: TableTheme;
 
     fn id(&self) -> RowHash;
     fn columns() -> &'static [Column<Self>]

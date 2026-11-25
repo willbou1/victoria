@@ -122,15 +122,40 @@ where
         self.ordered_row_hashes = ordered_row_hashes;
     }
 
-    pub fn follow_focus(&mut self) -> Option<Focus<'_, K>> {
-        let row = self.selected_row?;
-        let section = self.focused_section.and_then(|index| {
+    pub fn follow_focus(&mut self) -> Vec<Focus<'_, K>> {
+        if self.row_states.values().any(|s| s.marked) {
+            let focused_section = self.focused_section;
+            let sub_section_keys = &self.sub_section_keys;
+
+            return self
+                .row_states
+                .iter_mut()
+                .filter(|(_, s)| s.marked)
+                .map(|(r, s)| Focus {
+                    row: *r,
+                    section: focused_section.and_then(|index| {
+                        Some((
+                            sub_section_keys[index]?,
+                            s.sub_table_states[index].as_mut()?,
+                        ))
+                    }),
+                })
+                .collect();
+        }
+
+        let Some(row) = self.selected_row else {
+            return Vec::new();
+        };
+
+        let focused_section = self.focused_section;
+        let section = focused_section.and_then(|index| {
             Some((
                 self.sub_section_keys[index]?,
                 self.row_states.get_mut(&row)?.sub_table_states[index].as_mut()?,
             ))
         });
-        Some(Focus { row, section })
+
+        vec![Focus { row, section }]
     }
 
     fn unfocus_branch(&mut self) {

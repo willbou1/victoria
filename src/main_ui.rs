@@ -24,7 +24,7 @@ use tokio::{
 };
 use tracing::warn;
 
-use crate::config::AppConfig;
+use crate::{config::AppConfig, theme::Theme};
 
 use super::{
     libvictoria::{TorrentClient, torrent::control::*, types::*},
@@ -162,10 +162,10 @@ impl MainUI {
 
     async fn handle_torrent_event(&mut self, key: KeyCode) -> Result<()> {
         use KeyCode::*;
-        if let Some(Focus {
+        for Focus {
             row: torrent_hash,
             section,
-        }) = self.state.follow_focus()
+        } in self.state.follow_focus()
         {
             if let Some((hash, torrent)) = self
                 .client
@@ -188,8 +188,7 @@ impl MainUI {
                         if let Some((Section::Progress(ProgressSection::Files), file_section)) =
                             section
                         {
-                            if let Some(Focus { row: file_hash, .. }) = file_section.follow_focus()
-                            {
+                            for Focus { row: file_hash, .. } in file_section.follow_focus() {
                                 if let Some((file_index, priority)) =
                                     torrent.progress().transfer.as_ref().and_then(|t| {
                                         t.files
@@ -309,7 +308,7 @@ impl MainUI {
                             .iter()
                             .map(|b| b.nodes.len())
                             .collect();
-                        frame.push_str(&self.histogram.render(buckets, width));
+                        frame.push_str(&self.histogram.render::<Theme>(buckets, width));
                     }
 
                     frame = frame

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::{collections::HashMap, net::{SocketAddr, SocketAddrV4, SocketAddrV6}};
 
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 
@@ -77,11 +77,11 @@ impl PEXMessage {
         for added in &self.added {
             for endpoint in &added.endpoints {
                 match endpoint {
-                    Endpoint::V4(v4) => {
+                    Endpoint::Addr(SocketAddr::V4(v4)) => {
                         added4.extend(v4.to_compact());
                         flags4.push(added.flags);
                     }
-                    Endpoint::V6(v6) => {
+                    Endpoint::Addr(SocketAddr::V6(v6)) => {
                         added6.extend(v6.to_compact());
                         flags6.push(added.flags);
                     }
@@ -91,8 +91,8 @@ impl PEXMessage {
         }
         for dropped in &self.dropped {
             match dropped {
-                Endpoint::V4(v4) => dropped4.extend(v4.to_compact()),
-                Endpoint::V6(v6) => dropped6.extend(v6.to_compact()),
+                Endpoint::Addr(SocketAddr::V4(v4)) => dropped4.extend(v4.to_compact()),
+                Endpoint::Addr(SocketAddr::V6(v6)) => dropped6.extend(v6.to_compact()),
                 _ => (),
             }
         }

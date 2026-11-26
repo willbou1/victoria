@@ -3,8 +3,8 @@ use tracing::trace;
 
 use rand::{RngExt, rng};
 use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv6Addr, SocketAddr},
+    collections::{HashMap, HashSet},
+    net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
 use tokio::net::UdpSocket;
 
@@ -15,16 +15,23 @@ use crate::libvictoria::types::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeInfo {
     pub id: NodeId,
-    pub endpoints: EndpointSet,
+    pub addrs: HashSet<SocketAddr>,
 }
 
 impl NodeInfo {
+    pub fn new(id: NodeId, addr: SocketAddr) -> Self {
+        Self {
+            id,
+            addrs: HashSet::from([addr]),
+        }
+    }
+
     pub fn is_same(&self, other: &Self) -> bool {
-        self.id == other.id || self.endpoints.intersects(&other.endpoints)
+        self.id == other.id || !self.addrs.is_disjoint(&other.addrs)
     }
 
     pub fn merge(&mut self, other: Self) {
-        self.endpoints.merge(other.endpoints);
+        self.addrs.extend(other.addrs);
     }
 
     pub fn from_compact_4(compact: &[u8]) -> Result<Self> {
@@ -33,7 +40,9 @@ impl NodeInfo {
         }
         Ok(Self {
             id: NodeId(compact[0..20].try_into().unwrap()),
-            endpoints: Endpoint::from_compact_4(&compact[20..26])?.into(),
+            addrs: HashSet::from([SocketAddr::V4(SocketAddrV4::from_compact(
+                &compact[20..26].try_into()?,
+            ))]),
         })
     }
 
@@ -43,7 +52,9 @@ impl NodeInfo {
         }
         Ok(Self {
             id: NodeId(compact[0..20].try_into().unwrap()),
-            endpoints: Endpoint::from_compact_6(&compact[20..38])?.into(),
+            addrs: HashSet::from([SocketAddr::V6(SocketAddrV6::from_compact(
+                &compact[20..38].try_into()?,
+            ))]),
         })
     }
 
@@ -51,7 +62,7 @@ impl NodeInfo {
         compact4s: Option<&[u8]>,
         compact6s: Option<&[u8]>,
     ) -> Result<Vec<Self>> {
-        let mut infos = Vec::new();
+        let mut infos = Vec::<Self>::new();
         if let Some(compact4s) = compact4s {
             if !compact4s.len().is_multiple_of(26) {
                 return Err(anyhow!(
@@ -91,10 +102,10 @@ impl NodeInfo {
         Ok(infos)
     }
 
-    pub fn v4(&self) -> Option<EndpointV4> {
-        for endpoint in self.endpoints.iter() {
-            match endpoint {
-                Endpoint::V4(v4) => {
+    pub fn v4(&self) -> Option<SocketAddrV4> {
+        for addr in &self.addrs {
+            match addr {
+                SocketAddr::V4(v4) => {
                     return Some(*v4);
                 }
                 _ => (),
@@ -103,10 +114,10 @@ impl NodeInfo {
         None
     }
 
-    pub fn v6(&self) -> Option<EndpointV6> {
-        for endpoint in self.endpoints.iter() {
-            match endpoint {
-                Endpoint::V6(v6) => {
+    pub fn v6(&self) -> Option<SocketAddrV6> {
+        for addr in &self.addrs {
+            match addr {
+                SocketAddr::V6(v6) => {
                     return Some(*v6);
                 }
                 _ => (),
@@ -138,8 +149,8 @@ impl NodeInfo {
 
 type TransactionId = Vec<u8>;
 pub struct Message {
-    transaction_id: TransactionId,
-    client_version: Option<ClientVersion>,
+    pub transaction_id: TransactionId,
+    pub client_version: Option<ClientVersion>,
     pub type_of: MessageType,
 }
 
@@ -329,6 +340,9 @@ pub enum Query {
         target: NodeId,
         want_nodes: WantNodes,
     },
+    SampleInfohashes {
+        target: Hash,
+    },
 }
 
 impl Query {
@@ -337,6 +351,9 @@ impl Query {
         let params = root.required(b"a")?;
         Ok(match q.as_str()? {
             "ping" => Self::Ping,
+            "sample_infohashes" => Self::SampleInfohashes {
+                target: Hash(params.required(b"target")?.to_n_bytes()?),
+            },
             "find_node" => Self::FindNode {
                 target: NodeId(params.required(b"target")?.to_n_bytes()?),
                 want_nodes: WantNodes::from_bencode(params.optional(b"want")?)?,
@@ -347,7 +364,7 @@ impl Query {
             },
             "announce_peer" => Self::AnnouncePeer {
                 info_hash: Hash(params.required(b"info_hash")?.to_n_bytes()?),
-                implied_port: params.required(b"implied_port")?.to_bool()?,
+                implied_port: params.map_optional(b"implied_port", |ip| ip.to_bool())?.unwrap_or(false),
                 port: params.required(b"port")?.to_integer()?,
                 token: params.required(b"token")?.to_bytes()?,
             },
@@ -361,6 +378,10 @@ impl Query {
         match self {
             Self::Ping => {
                 key_vals.insert(b"q".into(), ByteString(b"ping".to_vec()));
+            }
+            Self::SampleInfohashes { target } => {
+                key_vals.insert(b"q".into(), ByteString(b"sample_infohashes".to_vec()));
+                params.insert(b"target".into(), ByteString(target.to_vec()));
             }
             Self::FindNode { target, want_nodes } => {
                 key_vals.insert(b"q".into(), ByteString(b"find_node".to_vec()));
@@ -403,22 +424,60 @@ impl Query {
 pub struct Response {
     pub token: Option<Vec<u8>>,
     pub nodes: Option<Vec<NodeInfo>>,
-    pub values: Option<Vec<Endpoint>>,
+    pub values: Option<HashSet<SocketAddr>>,
+
+    pub interval: Option<usize>,
+    pub num: Option<usize>,
+    pub samples: Option<HashSet<Hash>>,
 }
 
 impl Response {
+    pub const PING: Self = Self {
+        interval: None,
+        nodes: None,
+        num: None,
+        samples: None,
+        token: None,
+        values: None,
+    };
+
+    pub fn find_nodes(nodes: Vec<NodeInfo>) -> Self {
+        Self {
+            nodes: if nodes.len() > 0 {Some(nodes)} else {None},
+            ..Self::PING
+        }
+    }
+
+    pub fn get_peers_nodes(token: Vec<u8>, nodes: Vec<NodeInfo>) -> Self {
+        Self {
+            token: Some(token),
+            nodes: if nodes.len() > 0 {Some(nodes)} else {None},
+            ..Self::PING
+        }
+    }
+
+    pub fn get_peers_values(token: Vec<u8>, values: HashSet<SocketAddr>) -> Self {
+        Self {
+            token: Some(token),
+            values: Some(values),
+            ..Self::PING
+        }
+    }
+
     pub fn from_bencode(response: &BencodeAccessor, v6: bool) -> Result<Self> {
         Ok(Self {
             token: response.map_optional(b"token", |token| token.to_bytes())?,
-            values: response.map_optional(b"values", |values| {
-                values.map_list(|value| {
-                    Ok(if v6 {
-                        Endpoint::V6(EndpointV6::from_compact(value.as_n_bytes()?))
-                    } else {
-                        Endpoint::V4(EndpointV4::from_compact(value.as_n_bytes()?))
+            values: response
+                .map_optional(b"values", |values| {
+                    values.map_list(|value| {
+                        Ok(if v6 {
+                            SocketAddrV6::from_compact(value.as_n_bytes()?).into()
+                        } else {
+                            SocketAddrV4::from_compact(value.as_n_bytes()?).into()
+                        })
                     })
-                })
-            })?,
+                })?
+                .map(|v| HashSet::from_iter(v.into_iter())),
             nodes: match (
                 response.map_optional(b"nodes", |n| n.as_bytes())?,
                 response.map_optional(b"nodes6", |n| n.as_bytes())?,
@@ -429,6 +488,14 @@ impl Response {
                         .or_else(|_| NodeInfo::from_compact_lists(None, nodes))?,
                 ),
             },
+
+            interval: response.map_optional(b"interval", |interval| interval.to_integer())?,
+            num: response.map_optional(b"num", |num| num.to_integer())?,
+            samples: response
+                .map_optional(b"samples", |samples| {
+                    samples.map_list(|sample| Ok(Hash(sample.to_n_bytes()?)))
+                })?
+                .map(|s| HashSet::from_iter(s.into_iter())),
         })
     }
 
@@ -458,8 +525,8 @@ impl Response {
                     values
                         .iter()
                         .filter_map(|v| match v {
-                            Endpoint::V4(e) if !v6 => Some(ByteString(e.to_compact().into())),
-                            Endpoint::V6(e) if v6 => Some(ByteString(e.to_compact().into())),
+                            SocketAddr::V4(e) if !v6 => Some(ByteString(e.to_compact().into())),
+                            SocketAddr::V6(e) if v6 => Some(ByteString(e.to_compact().into())),
                             _ => None,
                         })
                         .collect(),
@@ -491,7 +558,7 @@ impl DHT {
         })
     }
 
-    pub async fn receive(&mut self) -> Result<(Endpoint, Message, Option<Query>)> {
+    pub async fn receive(&mut self) -> Result<(SocketAddr, Message, Option<Query>)> {
         let (size, addr) = self.socket4.recv_from(&mut self.buffer).await?;
         let mut ret_query = None;
         let message = Message::from_bytes(
@@ -509,13 +576,12 @@ impl DHT {
                 c => Err(anyhow!("Unsupported message type  {c}")),
             },
         )?;
-        Ok((Endpoint::from(addr), message, ret_query))
+        Ok((addr, message, ret_query))
     }
 
-    pub async fn query(&mut self, endpoint: &Endpoint, query: Query) -> Result<()> {
+    pub async fn query(&mut self, addr: &SocketAddr, query: Query) -> Result<()> {
         let transaction_id: [u8; 2] = rng().random();
         self.queries.insert(transaction_id.to_vec(), query.clone());
-        let addr = endpoint.resolve().await?;
         self.socket4
             .send_to(
                 &Message {
@@ -535,11 +601,10 @@ impl DHT {
 
     pub async fn respond(
         &self,
-        endpoint: &Endpoint,
+        addr: &SocketAddr,
         transaction_id: Vec<u8>,
         response: Response,
     ) -> Result<()> {
-        let addr = endpoint.resolve().await?;
         self.socket4
             .send_to(
                 &Message {

@@ -1,13 +1,12 @@
+use std::{collections::HashSet, str::FromStr};
+
 use anyhow::{Result, anyhow};
 use rand::{Rng, RngExt, rng};
 use std::{
-    collections::HashSet,
     fmt,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
 };
-
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
-
 pub type ClientVersion = Vec<u8>;
 pub const CLIENT_VERSION: &'static [u8; 4] = &[b'L', b'V', 0, 0]; // libvictoria
 
@@ -122,61 +121,50 @@ impl NodeId {
 }
 impl_id!(NodeId);
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct EndpointV4(pub SocketAddrV4);
-impl EndpointV4 {
-    pub fn from_str(s: &str, port: u16) -> Option<Self> {
-        s.parse::<Ipv4Addr>()
-            .ok()
-            .map(|ip| Self(SocketAddrV4::new(ip, port)))
-    }
-
-    pub fn from_compact(compact: &[u8; 6]) -> Self {
-        Self(SocketAddrV4::new(
+pub trait SocketAddrV4Ext {
+    fn from_compact(compact: &[u8; 6]) -> SocketAddrV4;
+    fn from_compact_list(compact: &[u8]) -> Result<Vec<SocketAddrV4>>;
+    fn to_compact(&self) -> [u8; 6];
+}
+impl SocketAddrV4Ext for SocketAddrV4 {
+    fn from_compact(compact: &[u8; 6]) -> Self {
+        Self::new(
             Ipv4Addr::from_octets(compact[..4].try_into().unwrap()),
             u16::from_be_bytes(compact[4..6].try_into().unwrap()),
-        ))
+        )
     }
 
-    pub fn from_compact_list(compact: &[u8]) -> Result<Vec<Self>> {
+    fn from_compact_list(compact: &[u8]) -> Result<Vec<Self>> {
         if !compact.len().is_multiple_of(6) {
             return Err(anyhow!("A compact list of IpV4 needs to be divisible by 6"));
         }
         Ok(compact
             .chunks_exact(6)
-            .map(|c| EndpointV4::from_compact(c.try_into().unwrap()))
+            .map(|c| Self::from_compact(c.try_into().unwrap()))
             .collect())
     }
 
-    pub fn to_compact(&self) -> [u8; 6] {
+    fn to_compact(&self) -> [u8; 6] {
         let mut compact = [0; 6];
-        compact[..4].copy_from_slice(&self.0.ip().octets());
-        compact[4..].copy_from_slice(&self.0.port().to_be_bytes());
+        compact[..4].copy_from_slice(&self.ip().octets());
+        compact[4..].copy_from_slice(&self.port().to_be_bytes());
         compact
     }
 }
-impl fmt::Display for EndpointV4 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
+
+pub trait SocketAddrV6Ext {
+    fn from_compact(compact: &[u8; 18]) -> SocketAddrV6;
+    fn from_compact_list(compact: &[u8]) -> Result<Vec<SocketAddrV6>>;
+    fn to_compact(&self) -> [u8; 18];
 }
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct EndpointV6(pub SocketAddrV6);
-impl EndpointV6 {
-    pub fn from_str(s: &str, port: u16) -> Option<Self> {
-        s.parse::<Ipv6Addr>()
-            .ok()
-            .map(|ip| Self(SocketAddrV6::new(ip, port, 0, 0)))
-    }
-
-    pub fn from_compact(compact: &[u8; 18]) -> Self {
+impl SocketAddrV6Ext for SocketAddrV6 {
+    fn from_compact(compact: &[u8; 18]) -> Self {
         let ip = Ipv6Addr::from_octets(compact[..16].try_into().unwrap());
         let port = u16::from_be_bytes(compact[16..18].try_into().unwrap());
-        Self(SocketAddrV6::new(ip, port, 0, 0))
+        Self::new(ip, port, 0, 0)
     }
 
-    pub fn from_compact_list(compact: &[u8]) -> Result<Vec<Self>> {
+    fn from_compact_list(compact: &[u8]) -> Result<Vec<Self>> {
         if !compact.len().is_multiple_of(18) {
             return Err(anyhow!(
                 "A compact list of IpV6 needs to be divisible by 18"
@@ -184,59 +172,43 @@ impl EndpointV6 {
         }
         Ok(compact
             .chunks_exact(18)
-            .map(|c| EndpointV6::from_compact(c.try_into().unwrap()))
+            .map(|c| Self::from_compact(c.try_into().unwrap()))
             .collect())
     }
 
-    pub fn to_compact(&self) -> [u8; 18] {
+    fn to_compact(&self) -> [u8; 18] {
         let mut compact = [0; 18];
-        compact[..16].copy_from_slice(&self.0.ip().octets());
-        compact[16..].copy_from_slice(&self.0.port().to_be_bytes());
+        compact[..16].copy_from_slice(&self.ip().octets());
+        compact[16..].copy_from_slice(&self.port().to_be_bytes());
         compact
-    }
-}
-impl fmt::Display for EndpointV6 {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
     }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Endpoint {
-    V4(EndpointV4),
-    V6(EndpointV6),
+    Addr(SocketAddr),
     Hostname { host: String, port: u16 },
 }
 
 impl From<std::net::SocketAddr> for Endpoint {
     fn from(addr: std::net::SocketAddr) -> Self {
-        match addr {
-            std::net::SocketAddr::V4(addr) => Self::V4(EndpointV4(addr)),
-            std::net::SocketAddr::V6(addr) => Self::V6(EndpointV6(addr)),
-        }
+        Self::Addr(addr)
     }
 }
-
+impl From<std::net::SocketAddrV4> for Endpoint {
+    fn from(v4: std::net::SocketAddrV4) -> Self {
+        Self::Addr(SocketAddr::V4(v4))
+    }
+}
+impl From<std::net::SocketAddrV6> for Endpoint {
+    fn from(v6: std::net::SocketAddrV6) -> Self {
+        Self::Addr(SocketAddr::V6(v6))
+    }
+}
 impl Endpoint {
-    pub fn v6(&self) -> Option<&Self> {
-        match self {
-            Self::V6(_) => Some(self),
-            _ => None,
-        }
-    }
-
-    pub fn v4(&self) -> Option<&Self> {
-        match self {
-            Self::V4(_) => Some(self),
-            _ => None,
-        }
-    }
-
     pub fn from_str(s: &str, port: u16) -> Self {
-        if let Some(e4) = EndpointV4::from_str(s, port) {
-            Self::V4(e4)
-        } else if let Some(e6) = EndpointV6::from_str(s, port) {
-            Self::V6(e6)
+        if let Ok(ip) = IpAddr::from_str(s) {
+            Self::Addr(SocketAddr::new(ip, port))
         } else {
             Self::Hostname {
                 host: s.to_string(),
@@ -246,48 +218,46 @@ impl Endpoint {
     }
 
     pub fn from_compact_4(compact: &[u8]) -> Result<Self> {
-        Ok(Self::V4(EndpointV4::from_compact(
+        Ok(SocketAddrV4::from_compact(
             compact
                 .try_into()
                 .map_err(|_| anyhow!("A compact IpV4 needs to be 6 bytes long"))?,
-        )))
+        ).into())
     }
 
     pub fn from_compact_6(compact: &[u8]) -> Result<Self> {
-        Ok(Self::V6(EndpointV6::from_compact(
+        Ok(SocketAddrV6::from_compact(
             compact
                 .try_into()
                 .map_err(|_| anyhow!("A compact IpV6 needs to be 6 bytes long"))?,
-        )))
+        ).into())
     }
 
     pub fn from_compact_4_list(compact: &[u8]) -> Result<Vec<Self>> {
-        Ok(EndpointV4::from_compact_list(compact)?
+        Ok(SocketAddrV4::from_compact_list(compact)?
             .into_iter()
-            .map(|v4| Self::V4(v4))
+            .map(|addr| addr.into())
             .collect())
     }
 
     pub fn from_compact_6_list(compact: &[u8]) -> Result<Vec<Self>> {
-        Ok(EndpointV6::from_compact_list(compact)?
+        Ok(SocketAddrV6::from_compact_list(compact)?
             .into_iter()
-            .map(|v6| Self::V6(v6))
+            .map(|addr| addr.into())
             .collect())
     }
 
     pub fn set_port(&mut self, new_port: u16) {
         match self {
             Self::Hostname { port, .. } => *port = new_port,
-            Self::V4(v4) => v4.0.set_port(new_port),
-            Self::V6(v6) => v6.0.set_port(new_port),
+            Self::Addr(addr) => addr.set_port(new_port),
         }
     }
 
     pub async fn resolve(&self) -> Result<SocketAddr> {
         Ok(match self {
-            Endpoint::V4(v4) => SocketAddr::V4(v4.0),
-            Endpoint::V6(v6) => SocketAddr::V6(v6.0),
-            Endpoint::Hostname { host, port } => tokio::net::lookup_host((host.as_str(), *port))
+            Self::Addr(addr) => *addr,
+            Self::Hostname { host, port } => tokio::net::lookup_host((host.as_str(), *port))
                 .await?
                 .next()
                 .ok_or(anyhow!("Failed to resolve hostname {host}"))?,
@@ -299,8 +269,7 @@ impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Hostname { host, port } => write!(f, "{host}:{port}"),
-            Self::V4(v4) => write!(f, "{v4}"),
-            Self::V6(v6) => write!(f, "{v6}"),
+            Self::Addr(addr) => write!(f, "{addr}"),
         }
     }
 }
@@ -468,19 +437,10 @@ impl From<Endpoint> for PeerInfo {
         }
     }
 }
-impl From<EndpointV4> for PeerInfo {
-    fn from(endpoint: EndpointV4) -> Self {
+impl From<SocketAddr> for PeerInfo {
+    fn from(addr: SocketAddr) -> Self {
         Self {
-            endpoints: EndpointSet::from(Endpoint::V4(endpoint)),
-            flags: Self::DEFAULT_FLAGS,
-            id: None,
-        }
-    }
-}
-impl From<EndpointV6> for PeerInfo {
-    fn from(endpoint: EndpointV6) -> Self {
-        Self {
-            endpoints: EndpointSet::from(Endpoint::V6(endpoint)),
+            endpoints: EndpointSet::from(Endpoint::from(addr)),
             flags: Self::DEFAULT_FLAGS,
             id: None,
         }

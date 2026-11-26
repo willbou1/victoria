@@ -8,6 +8,7 @@ use rand::seq::SliceRandom;
 use sha1::{Digest, Sha1};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -77,7 +78,7 @@ pub(crate) enum Event {
     Message(PeerId, Message),
 
     Tracker(Vec<PeerInfo>),
-    DHT(Vec<EndpointV4>),
+    DHT(HashSet<SocketAddr>),
 
     Connection(ConnectionEvent),
     Command(CommandEvent),
@@ -957,9 +958,21 @@ impl Torrent {
 
                         Message::DHTPort { port } => {
                             debug!("DHT port {port}");
-                            let mut endpoints = peer.info().endpoints.clone();
-                            endpoints.iter().for_each(|e| e.set_port(port));
-                            let _ = self.dht_tx.send(DHTEvent::FoundNode(endpoints)).await;
+                            let addrs = futures::future::join_all(
+                                peer.info()
+                                    .endpoints
+                                    .iter()
+                                    .cloned()
+                                    .map(|mut e| async move {
+                                        e.set_port(port);
+                                        e.resolve().await
+                                    }),
+                            )
+                                .await
+                                .into_iter()
+                                .filter_map(|a| a.ok())
+                                .collect();
+                            let _ = self.dht_tx.send(DHTEvent::FoundNode(addrs)).await;
                         }
 
                         Message::Unsupported { type_byte } => {
@@ -988,10 +1001,10 @@ impl Torrent {
                     self.discover(&info, Some(DiscoveryMechanism::Tracker))?;
                 }
             }
-            Event::DHT(endpointsv4) => {
+            Event::DHT(addrs) => {
                 debug!("DHT discovery");
-                for endpointv4 in endpointsv4 {
-                    self.discover(&PeerInfo::from(endpointv4), Some(DiscoveryMechanism::DHT))?;
+                for addr in addrs {
+                    self.discover(&PeerInfo::from(addr), Some(DiscoveryMechanism::DHT))?;
                 }
             }
 

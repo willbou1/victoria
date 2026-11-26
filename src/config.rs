@@ -20,6 +20,7 @@ impl AppConfig {
         let base_dirs = BaseDirs::new().ok_or(anyhow!("Can't get base directories"))?;
         let user_dirs = UserDirs::new().ok_or(anyhow!("Can't get user directories"))?;
         let config_path = base_dirs.config_dir().join("victoria").join("config.toml");
+        fs::create_dir_all(&config_path.parent().unwrap()).await?;
         if !fs::try_exists(&config_path).await? {
             let config = AppConfig {
                 data_path: base_dirs.data_dir().join("victoria").join("torrents"),

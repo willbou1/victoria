@@ -8,7 +8,6 @@ use crossterm::{
     },
     execute, terminal,
 };
-use directories::{BaseDirs, UserDirs};
 use interprocess::local_socket::{
     self, GenericNamespaced, ListenerOptions, ToNsName, tokio::prelude::*,
 };

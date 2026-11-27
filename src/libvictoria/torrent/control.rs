@@ -238,13 +238,15 @@ impl Default for DHTBucketInfo {
 
 #[derive(Debug)]
 pub struct DHTInfo {
-    pub buckets: [DHTBucketInfo; 160],
+    pub buckets_4: [DHTBucketInfo; 160],
+    pub buckets_6: [DHTBucketInfo; 160],
 }
 
 impl Default for DHTInfo {
     fn default() -> Self {
         Self {
-            buckets: array::from_fn(|_| DHTBucketInfo::default()),
+            buckets_4: array::from_fn(|_| DHTBucketInfo::default()),
+            buckets_6: array::from_fn(|_| DHTBucketInfo::default()),
         }
     }
 }

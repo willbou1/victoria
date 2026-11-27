@@ -5,6 +5,7 @@ use rand::{RngExt, rng};
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    time::{Duration, Instant},
 };
 use tokio::net::UdpSocket;
 
@@ -364,7 +365,9 @@ impl Query {
             },
             "announce_peer" => Self::AnnouncePeer {
                 info_hash: Hash(params.required(b"info_hash")?.to_n_bytes()?),
-                implied_port: params.map_optional(b"implied_port", |ip| ip.to_bool())?.unwrap_or(false),
+                implied_port: params
+                    .map_optional(b"implied_port", |ip| ip.to_bool())?
+                    .unwrap_or(false),
                 port: params.required(b"port")?.to_integer()?,
                 token: params.required(b"token")?.to_bytes()?,
             },
@@ -443,7 +446,7 @@ impl Response {
 
     pub fn find_nodes(nodes: Vec<NodeInfo>) -> Self {
         Self {
-            nodes: if nodes.len() > 0 {Some(nodes)} else {None},
+            nodes: if nodes.len() > 0 { Some(nodes) } else { None },
             ..Self::PING
         }
     }
@@ -451,7 +454,7 @@ impl Response {
     pub fn get_peers_nodes(token: Vec<u8>, nodes: Vec<NodeInfo>) -> Self {
         Self {
             token: Some(token),
-            nodes: if nodes.len() > 0 {Some(nodes)} else {None},
+            nodes: if nodes.len() > 0 { Some(nodes) } else { None },
             ..Self::PING
         }
     }
@@ -540,33 +543,63 @@ impl Response {
     }
 }
 
+pub struct QueryRecord {
+    at: Instant,
+    addr: SocketAddr,
+    query: Query,
+}
+
+impl QueryRecord {
+    pub fn new(addr: SocketAddr, query: Query) -> Self {
+        Self {
+            at: Instant::now(),
+            addr,
+            query,
+        }
+    }
+}
+
 pub struct DHT {
     id: NodeId,
-    socket4: UdpSocket,
+    socket: UdpSocket,
     buffer: [u8; 2048],
-    queries: HashMap<TransactionId, Query>,
+    queries: HashMap<TransactionId, QueryRecord>,
 }
 
 impl DHT {
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    fn real_addr(addr: SocketAddr) -> SocketAddr {
+        match addr {
+            SocketAddr::V6(v6) => v6
+                .ip()
+                .to_ipv4_mapped()
+                .map(|ip| SocketAddr::new(ip.into(), v6.port()))
+                .unwrap_or(addr),
+            addr => addr,
+        }
+    }
+
     pub async fn bind(id: NodeId, port: u16) -> Result<Self> {
         Ok(Self {
             id,
             buffer: [0; _],
-            socket4: UdpSocket::bind(SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), port))
+            socket: UdpSocket::bind(SocketAddr::new(IpAddr::from(Ipv6Addr::UNSPECIFIED), port))
                 .await?,
             queries: HashMap::new(),
         })
     }
 
     pub async fn receive(&mut self) -> Result<(SocketAddr, Message, Option<Query>)> {
-        let (size, addr) = self.socket4.recv_from(&mut self.buffer).await?;
+        let (size, addr) = self.socket.recv_from(&mut self.buffer).await?;
+        let addr = Self::real_addr(addr);
         let mut ret_query = None;
         let message = Message::from_bytes(
             &self.buffer[..size],
             |root, message_type, transaction_id| match message_type {
                 'q' => MessageType::from_bencode(root, addr.is_ipv6()),
                 'r' | 'e' => match self.queries.remove(transaction_id) {
-                    Some(query) => {
+                    Some(QueryRecord { query, .. }) => {
                         ret_query = Some(query.clone());
                         MessageType::from_bencode(root, addr.is_ipv6())
                     }
@@ -579,18 +612,18 @@ impl DHT {
         Ok((addr, message, ret_query))
     }
 
-    pub async fn query(&mut self, addr: &SocketAddr, query: Query) -> Result<()> {
+    pub async fn query(&mut self, addr: SocketAddr, query: Query) -> Result<()> {
         let transaction_id: [u8; 2] = rng().random();
-        self.queries.insert(transaction_id.to_vec(), query.clone());
-        self.socket4
+        self.queries.insert(
+            transaction_id.to_vec(),
+            QueryRecord::new(addr, query.clone()),
+        );
+        self.socket
             .send_to(
                 &Message {
                     transaction_id: transaction_id.to_vec(),
                     client_version: Some(CLIENT_VERSION.to_vec()),
-                    type_of: MessageType::Query {
-                        id: self.id,
-                        query: query.clone(),
-                    },
+                    type_of: MessageType::Query { id: self.id, query },
                 }
                 .to_bytes(addr.is_ipv6()),
                 addr,
@@ -605,7 +638,7 @@ impl DHT {
         transaction_id: Vec<u8>,
         response: Response,
     ) -> Result<()> {
-        self.socket4
+        self.socket
             .send_to(
                 &Message {
                     transaction_id,
@@ -620,5 +653,32 @@ impl DHT {
             )
             .await?;
         Ok(())
+    }
+
+    pub async fn error(
+        &self,
+        addr: &SocketAddr,
+        transaction_id: Vec<u8>,
+        code: ErrorCode,
+        message: String,
+    ) -> Result<()> {
+        self.socket
+            .send_to(
+                &Message {
+                    transaction_id,
+                    client_version: Some(CLIENT_VERSION.to_vec()),
+                    type_of: MessageType::Error { code, message },
+                }
+                .to_bytes(addr.is_ipv6()),
+                addr,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub fn get_timeouts(&mut self) -> Vec<(TransactionId, QueryRecord)> {
+        self.queries
+            .extract_if(|_, r| r.at.elapsed() > Self::TIMEOUT)
+            .collect()
     }
 }

@@ -26,7 +26,7 @@ use tracing::warn;
 use crate::{config::AppConfig, theme::Theme};
 
 use super::{
-    libvictoria::{TorrentClient, torrent::control::*, types::*},
+    libvictoria::{TorrentClient, torrent::control::*},
     rows::*,
 };
 use whodatrow::{histogram::*, state::*, *};
@@ -301,8 +301,15 @@ impl MainUI {
                     let mut frame = self.table.render(rows.iter().map(|r| &**r), &mut self.state, width).to_string();
 
                     if let Some(dht_info) = self.client.dht_info() {
-                        let buckets: Vec<_> = dht_info
-                            .buckets
+                        let mut buckets: Vec<_> = dht_info
+                            .buckets_4
+                            .as_ref()
+                            .iter()
+                            .map(|b| b.nodes.len())
+                            .collect();
+                        frame.push_str(&self.histogram.render::<Theme>(buckets, width));
+                        buckets = dht_info
+                            .buckets_6
                             .as_ref()
                             .iter()
                             .map(|b| b.nodes.len())
@@ -316,7 +323,7 @@ impl MainUI {
                         .collect::<Vec<_>>()
                         .join("\r\n");
 
-                    let fill = height.saturating_sub(self.table.num_row() - self.scroll + 5);
+                    let fill = height.saturating_sub(self.table.num_row() - self.scroll + 10);
                     for l in 0..fill {
                         frame.extend(std::iter::repeat_n(' ', width));
                         if l < fill - 1 {

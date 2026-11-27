@@ -5,8 +5,7 @@ use sha1::Digest;
 use std::{
     array,
     collections::{HashMap, HashSet},
-    net::{SocketAddr, SocketAddrV4},
-    ops::Sub,
+    net::{SocketAddr, SocketAddrV4, SocketAddrV6},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -25,11 +24,7 @@ use super::{
     types::*,
 };
 
-const MAX_NUM_NODES_PER_BUCKET: usize = 8;
 const GOOD_INTERVAL: Duration = Duration::from_mins(1);
-const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
-const SECRET_INTERVAL: Duration = Duration::from_mins(5);
-
 #[derive(Debug)]
 struct EndpointStatistics {
     last_sent: Instant,
@@ -46,68 +41,58 @@ impl Default for EndpointStatistics {
 }
 
 #[derive(Debug)]
-struct Node {
+struct Node<A> {
     id: NodeId,
-    pub addrs: HashMap<SocketAddr, EndpointStatistics>,
+    pub addrs: HashMap<A, EndpointStatistics>,
 }
 
-impl Node {
-    pub fn new(id: NodeId, addr: SocketAddr) -> Self {
+impl<A: std::hash::Hash + Eq + Copy> Node<A> {
+    pub fn new(id: NodeId, addr: A) -> Self {
         Self {
             id,
             addrs: HashMap::from([(addr, EndpointStatistics::default())]),
         }
     }
 
-    pub fn add_addr(&mut self, addr: SocketAddr) {
+    pub fn add_addr(&mut self, addr: A) {
         self.addrs.entry(addr).or_default();
     }
 
-    pub fn refresh_addr(&mut self, addr: &SocketAddr) {
+    pub fn refresh_addr(&mut self, addr: A) {
         self.addrs
-            .get_mut(addr)
-            .map(|e| e.last_sent = Instant::now());
+            .entry(addr)
+            .and_modify(|e| e.last_sent = Instant::now());
     }
 
-    pub fn fail_addr(&mut self, addr: &SocketAddr) {
-        self.addrs.get_mut(addr).map(|e| e.num_failed_queries += 1);
+    pub fn fail_addr(&mut self, addr: A) {
+        self.addrs
+            .entry(addr)
+            .and_modify(|e| e.num_failed_queries += 1);
     }
 
-    pub fn best_addr(&self, desired: DesiredAddr) -> Option<SocketAddr> {
-        let mut addrs: Vec<_> = self.addrs.iter().collect();
-        addrs.sort_by(|a, b| {
-            a.1.num_failed_queries
-                .cmp(&b.1.num_failed_queries)
-                .then(b.1.last_sent.cmp(&a.1.last_sent))
-        });
-        for (addr, _) in addrs {
-            match desired {
-                DesiredAddr::Any => return Some(*addr),
-                DesiredAddr::V4 if addr.is_ipv4() => return Some(*addr),
-                DesiredAddr::V6 if addr.is_ipv6() => return Some(*addr),
-                _ => (),
-            }
-        }
-        None
+    pub fn best_addr(&self) -> Option<A> {
+        self.addrs
+            .iter()
+            .min_by(|a, b| {
+                a.1.num_failed_queries
+                    .cmp(&b.1.num_failed_queries)
+                    .then(b.1.last_sent.cmp(&a.1.last_sent))
+            })
+            .map(|(addr, _)| *addr)
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum DesiredAddr {
-    V4,
-    V6,
-    Any,
 }
 
 #[derive(Debug)]
-struct Bucket {
-    nodes: HashMap<NodeId, Node>,
+struct Bucket<A> {
+    nodes: HashMap<NodeId, Node<A>>,
     last_changed: Instant,
 }
 
-impl Bucket {
+impl<A: std::hash::Hash + Eq + Copy> Bucket<A> {
+    const MAX_NUM_NODES_PER_BUCKET: usize = 8;
+
     pub fn is_full(&self) -> bool {
-        self.nodes.len() >= MAX_NUM_NODES_PER_BUCKET
+        self.nodes.len() >= Self::MAX_NUM_NODES_PER_BUCKET
     }
 
     pub fn is_maintainable(&self) -> bool {
@@ -118,14 +103,14 @@ impl Bucket {
         self.nodes.len()
     }
 
-    pub fn add_addr(&mut self, id: NodeId, addr: SocketAddr) -> bool {
+    pub fn add_addr(&mut self, id: NodeId, addr: A) -> bool {
         let mut exists = false;
         if let Some(node) = self.nodes.get_mut(&id) {
             node.add_addr(addr);
             exists = true;
         }
         if exists {
-            self.refresh_addr(&id, &addr);
+            self.refresh_addr(&id, addr);
             return false;
         }
         if !self.is_full() {
@@ -136,21 +121,21 @@ impl Bucket {
         return false;
     }
 
-    pub fn refresh_addr(&mut self, node_id: &NodeId, addr: &SocketAddr) {
+    pub fn refresh_addr(&mut self, node_id: &NodeId, addr: A) {
         if let Some(node) = self.nodes.get_mut(node_id) {
             node.refresh_addr(addr);
             self.last_changed = Instant::now();
         }
     }
 
-    pub fn fail_addr(&mut self, node_id: &NodeId, addr: &SocketAddr) {
+    pub fn fail_addr(&mut self, node_id: &NodeId, addr: A) {
         if let Some(node) = self.nodes.get_mut(node_id) {
             node.fail_addr(addr);
         }
     }
 }
 
-impl Default for Bucket {
+impl<A> Default for Bucket<A> {
     fn default() -> Self {
         Self {
             nodes: HashMap::new(),
@@ -160,12 +145,12 @@ impl Default for Bucket {
 }
 
 #[derive(Debug)]
-struct RoutingTable {
+struct RoutingTable<A> {
     id: NodeId,
-    buckets: [Bucket; 160],
+    buckets: [Bucket<A>; 160],
 }
 
-impl RoutingTable {
+impl<A: std::hash::Hash + Eq + Copy> RoutingTable<A> {
     fn new(id: NodeId) -> Self {
         Self {
             id,
@@ -173,7 +158,7 @@ impl RoutingTable {
         }
     }
 
-    fn get_bucket_mut(&mut self, node_id: &NodeId) -> Option<&mut Bucket> {
+    fn get_bucket_mut(&mut self, node_id: &NodeId) -> Option<&mut Bucket<A>> {
         let prefix_length = node_id.kademlia(&self.id).prefix_length();
         if prefix_length == 160 {
             return None;
@@ -181,7 +166,7 @@ impl RoutingTable {
         Some(&mut self.buckets[prefix_length as usize])
     }
 
-    pub fn add_addr(&mut self, id: NodeId, addr: SocketAddr) -> Option<u8> {
+    pub fn add_addr(&mut self, id: NodeId, addr: A) -> Option<u8> {
         let prefix_length = id.kademlia(&self.id).prefix_length();
         if prefix_length == 160 {
             return None;
@@ -212,55 +197,54 @@ impl RoutingTable {
         scored.into_iter().map(|(m, _)| m).rev().take(num).collect()
     }
 
-    pub fn get_closest_nodes(
-        &self,
-        id: &impl AsRef<[u8; 20]>,
-        desired: DesiredAddr,
-        num: usize,
-    ) -> HashMap<NodeId, SocketAddr> {
+    pub fn get_closest_nodes(&self, id: &impl AsRef<[u8; 20]>, num: usize) -> HashMap<NodeId, A> {
         let mut nodes: Vec<_> = self.buckets.iter().flat_map(|b| b.nodes.values()).collect();
         nodes.sort_unstable_by_key(|n| n.id.kademlia(id));
         nodes
             .iter()
-            .filter_map(|n| n.best_addr(desired).map(|a| (n.id, a)))
+            .filter_map(|n| n.best_addr().map(|a| (n.id, a)))
             .take(num)
             .collect()
     }
 
-    pub fn get_closest_addrs(
-        &self,
-        id: &impl AsRef<[u8; 20]>,
-        desired: DesiredAddr,
-        num: usize,
-    ) -> HashSet<SocketAddr> {
-        self.get_closest_nodes(id, desired, num)
-            .into_values()
-            .collect()
+    pub fn get_closest_addrs(&self, id: &impl AsRef<[u8; 20]>, num: usize) -> HashSet<A> {
+        self.get_closest_nodes(id, num).into_values().collect()
     }
 
-    pub fn refresh_addr(&mut self, node_id: &NodeId, addr: &SocketAddr) {
+    pub fn refresh_addr(&mut self, node_id: &NodeId, addr: A) {
         self.get_bucket_mut(node_id)
             .map(|b| b.refresh_addr(node_id, addr));
     }
 
-    pub fn fail_addr(&mut self, node_id: &NodeId, addr: &SocketAddr) {
+    pub fn fail_addr(&mut self, node_id: &NodeId, addr: A) {
         self.get_bucket_mut(node_id)
             .map(|b| b.fail_addr(node_id, addr));
     }
 }
 
-struct InfoHashKnowledge {
+#[derive(Debug)]
+struct InfoHashEntry {
     visited_ids: HashSet<(NodeId, bool)>,
     peers: HashSet<SocketAddr>,
-    tx: mpsc::Sender<Event>,
+    tx: Option<mpsc::Sender<Event>>,
 }
 
-impl InfoHashKnowledge {
+impl Default for InfoHashEntry {
+    fn default() -> Self {
+        Self {
+            visited_ids: HashSet::new(),
+            peers: HashSet::new(),
+            tx: None,
+        }
+    }
+}
+
+impl InfoHashEntry {
     pub fn new(tx: mpsc::Sender<Event>) -> Self {
         Self {
             visited_ids: HashSet::new(),
             peers: HashSet::new(),
-            tx,
+            tx: Some(tx),
         }
     }
 }
@@ -278,13 +262,20 @@ impl Secret {
     }
 
     fn token(&self, addr: &SocketAddr) -> Self {
-        let mut buff = [0; 38];
-        buff[..20].copy_from_slice(&self.0);
         match addr {
-            SocketAddr::V4(v4) => buff[20..].copy_from_slice(&v4.to_compact()),
-            SocketAddr::V6(v6) => buff[20..].copy_from_slice(&v6.to_compact()),
+            SocketAddr::V4(v4) => {
+                let mut buff = [0; 26];
+                buff[..20].copy_from_slice(&self.0);
+                buff[20..].copy_from_slice(&v4.to_compact());
+                Self(sha1::Sha1::digest(buff).into())
+            }
+            SocketAddr::V6(v6) => {
+                let mut buff = [0; 38];
+                buff[..20].copy_from_slice(&self.0);
+                buff[20..].copy_from_slice(&v6.to_compact());
+                Self(sha1::Sha1::digest(buff).into())
+            }
         }
-        Self(sha1::Sha1::digest(buff).into())
     }
 
     fn into_vec(self) -> Vec<u8> {
@@ -295,7 +286,8 @@ impl Secret {
 pub struct DHTManager {
     id: NodeId,
     dht: DHT,
-    routing_table: RoutingTable,
+    routing_table_4: RoutingTable<SocketAddrV4>,
+    routing_table_6: RoutingTable<SocketAddrV6>,
     rx: mpsc::Receiver<DHTEvent>,
     pub tx: mpsc::Sender<DHTEvent>,
     pub info_rx: watch::Receiver<DHTInfo>,
@@ -303,13 +295,16 @@ pub struct DHTManager {
     cancel: CancellationToken,
     info_tx: watch::Sender<DHTInfo>,
 
-    info_hashes: HashMap<Hash, InfoHashKnowledge>,
+    info_hashes: HashMap<Hash, InfoHashEntry>,
     discovered_ids: HashMap<NodeId, HashSet<NodeId>>,
     current_secret: Secret,
     previous_secret: Option<Secret>,
 }
 
 impl DHTManager {
+    const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
+    const SECRET_INTERVAL: Duration = Duration::from_mins(5);
+
     pub async fn new(
         cancel: CancellationToken,
         config_rx: watch::Receiver<Config>,
@@ -320,7 +315,8 @@ impl DHTManager {
         let dht_port = config_rx.borrow().dht_port;
         Ok(Self {
             dht: DHT::bind(node_id, dht_port).await?,
-            routing_table: RoutingTable::new(node_id),
+            routing_table_4: RoutingTable::new(node_id),
+            routing_table_6: RoutingTable::new(node_id),
             id: node_id,
             tx,
             rx,
@@ -340,8 +336,8 @@ impl DHTManager {
         let span = info_span!("DHT");
         let _enter = span.enter();
         async {
-            let mut secret_interval = tokio::time::interval(SECRET_INTERVAL);
-            let mut maintenance_interval = tokio::time::interval(MAINTENANCE_INTERVAL);
+            let mut secret_interval = tokio::time::interval(Self::SECRET_INTERVAL);
+            let mut maintenance_interval = tokio::time::interval(Self::MAINTENANCE_INTERVAL);
             maintenance_interval.tick().await;
             loop {
                 select! {
@@ -349,6 +345,7 @@ impl DHTManager {
                         self.maintain().await?;
                     },
                     _ = secret_interval.tick() => {
+                        warn!("{:?}", self.info_hashes);
                         self.previous_secret = Some(self.current_secret);
                         self.current_secret = Secret::random();
                     },
@@ -383,18 +380,42 @@ impl DHTManager {
     }
 
     async fn maintain(&mut self) -> Result<()> {
-        for inactive in self.routing_table.get_maintainable(5) {
+        for inactive in self.routing_table_4.get_maintainable(5) {
             let target = self.id.random_with_prefix_length(inactive);
             debug!("Performing maintenance for {target} of {}", self.id);
             self.discovered_ids.remove(&target);
             for addr in self
-                .routing_table
-                .get_closest_addrs(&target, DesiredAddr::Any, 8)
+                .routing_table_4
+                .get_closest_addrs(&target, 8)
+                .into_iter()
+                .map(SocketAddr::V4)
             {
                 let _ = self
                     .dht
                     .query(
-                        &addr,
+                        addr,
+                        Query::FindNode {
+                            target,
+                            want_nodes: WantNodes::new(true, true),
+                        },
+                    )
+                    .await;
+            }
+        }
+        for inactive in self.routing_table_6.get_maintainable(5) {
+            let target = self.id.random_with_prefix_length(inactive);
+            debug!("Performing maintenance for {target} of {}", self.id);
+            self.discovered_ids.remove(&target);
+            for addr in self
+                .routing_table_6
+                .get_closest_addrs(&target, 8)
+                .into_iter()
+                .map(SocketAddr::V6)
+            {
+                let _ = self
+                    .dht
+                    .query(
+                        addr,
                         Query::FindNode {
                             target,
                             want_nodes: WantNodes::new(true, true),
@@ -412,46 +433,32 @@ impl DHTManager {
         want_nodes: WantNodes,
         v6: bool,
     ) -> Vec<NodeInfo> {
-        if want_nodes.nodes4 && want_nodes.nodes6 {
-            self.routing_table
-                .get_closest_nodes(target, DesiredAddr::Any, 8)
-                .into_iter()
-                .map(|(id, addr)| NodeInfo::new(id, addr))
-                .collect()
-        } else if !want_nodes.nodes4 && !want_nodes.nodes6 {
-            self.routing_table
-                .get_closest_nodes(
-                    target,
-                    if !v6 {
-                        DesiredAddr::V4
-                    } else {
-                        DesiredAddr::V6
-                    },
-                    8,
-                )
-                .into_iter()
-                .map(|(id, addr)| NodeInfo::new(id, addr))
-                .collect()
-        } else {
-            self.routing_table
-                .get_closest_nodes(
-                    target,
-                    if want_nodes.nodes4 {
-                        DesiredAddr::V4
-                    } else {
-                        DesiredAddr::V6
-                    },
-                    8,
-                )
-                .into_iter()
-                .map(|(id, addr)| NodeInfo::new(id, addr))
-                .collect()
+        let mut nodes = Vec::new();
+        if want_nodes.nodes4 || (!want_nodes.nodes4 && !want_nodes.nodes6 && !v6) {
+            nodes.extend(
+                self.routing_table_4
+                    .get_closest_nodes(target, 8)
+                    .into_iter()
+                    .map(|(id, addr)| (id, SocketAddr::V4(addr))),
+            );
         }
+        if want_nodes.nodes6 || (!want_nodes.nodes4 && !want_nodes.nodes6 && v6) {
+            nodes.extend(
+                self.routing_table_6
+                    .get_closest_nodes(target, 8)
+                    .into_iter()
+                    .map(|(id, addr)| (id, SocketAddr::V6(addr))),
+            );
+        }
+        nodes
+            .into_iter()
+            .map(|(id, addr)| NodeInfo::new(id, addr))
+            .collect()
     }
 
     async fn handle_message(
         &mut self,
-        addr: SocketAddr,
+        mut addr: SocketAddr,
         message: Message,
         query: Option<Query>,
     ) -> Result<()> {
@@ -505,27 +512,44 @@ impl DHTManager {
                     port,
                     token,
                 } => {
-                    let Ok(token) = token.try_into().map(Secret) else {
-                        warn!("Invalid token length");
-                        return Ok(());
-                    };
-                    if token != self.current_secret.token(&addr)
-                        && self
-                            .previous_secret
-                            .map(|p| p.token(&addr) != token)
-                            .unwrap_or(true)
+                    if token
+                        .try_into()
+                        .map(|token| {
+                            let token = Secret(token);
+                            token != self.current_secret.token(&addr)
+                                && self
+                                    .previous_secret
+                                    .map(|p| p.token(&addr) != token)
+                                    .unwrap_or(true)
+                        })
+                        .unwrap_or(true)
                     {
-                        warn!("Bad token");
+                        let _ = self
+                            .dht
+                            .error(
+                                &addr,
+                                message.transaction_id,
+                                ErrorCode::Generic,
+                                String::from("Invalid token"),
+                            )
+                            .await;
                         return Ok(());
                     }
-
+                    let entry = self.info_hashes.entry(info_hash).or_default();
+                    if !implied_port {
+                        addr.set_port(port);
+                    }
+                    entry.peers.insert(addr);
                 }
                 _ => {
                     warn!("Got query {id} {addr}: {query:?}");
                 }
             },
             MessageType::Response { response, id } => {
-                self.routing_table.refresh_addr(&id, &addr);
+                match addr {
+                    SocketAddr::V4(v4) => self.routing_table_4.refresh_addr(&id, v4),
+                    SocketAddr::V6(v6) => self.routing_table_6.refresh_addr(&id, v6),
+                }
                 match query.unwrap() {
                     Query::FindNode { target, want_nodes } => {
                         if let Some(nodes) = response.nodes {
@@ -539,9 +563,11 @@ impl DHTManager {
                         }
                         if let Some(addrs) = response.values {
                             debug!("BINGO! {addrs:?}");
-                            if let Some(knowledge) = self.info_hashes.get_mut(&info_hash) {
-                                knowledge.peers.extend(addrs.clone());
-                                let _ = knowledge.tx.send(Event::DHT(addrs)).await;
+                            if let Some(entry) = self.info_hashes.get_mut(&info_hash) {
+                                entry.peers.extend(addrs.clone());
+                                if let Some(tx) = &entry.tx {
+                                    let _ = tx.send(Event::DHT(addrs)).await;
+                                }
                             }
                         }
                     }
@@ -554,13 +580,26 @@ impl DHTManager {
     }
 
     fn add_addr(&mut self, id: NodeId, addr: SocketAddr) {
-        if let Some(prefix_length) = self.routing_table.add_addr(id, addr) {
-            self.info_tx.send_modify(|info| {
-                info.buckets[prefix_length as usize]
-                    .nodes
-                    .push(DHTNodeInfo {});
-            });
-        }
+        match addr {
+            SocketAddr::V4(v4) => {
+                if let Some(prefix_length) = self.routing_table_4.add_addr(id, v4) {
+                    self.info_tx.send_modify(|info| {
+                        info.buckets_4[prefix_length as usize]
+                            .nodes
+                            .push(DHTNodeInfo {});
+                    });
+                }
+            }
+            SocketAddr::V6(v6) => {
+                if let Some(prefix_length) = self.routing_table_6.add_addr(id, v6) {
+                    self.info_tx.send_modify(|info| {
+                        info.buckets_6[prefix_length as usize]
+                            .nodes
+                            .push(DHTNodeInfo {});
+                    });
+                }
+            }
+        };
     }
 
     async fn find_nodes(
@@ -599,7 +638,7 @@ impl DHTManager {
                         let _ = self
                             .dht
                             .query(
-                                &addr,
+                                addr,
                                 Query::FindNode {
                                     target,
                                     want_nodes: WantNodes::new(true, true),
@@ -618,7 +657,7 @@ impl DHTManager {
             let bit_torrent_port = self.config_rx.borrow().bit_torrent_port;
             self.dht
                 .query(
-                    &addr,
+                    addr,
                     Query::AnnouncePeer {
                         implied_port: false,
                         info_hash: Hash(target.into()),
@@ -670,7 +709,7 @@ impl DHTManager {
                         let _ = self
                             .dht
                             .query(
-                                &addr,
+                                addr,
                                 Query::GetPeers {
                                     info_hash,
                                     want_nodes: WantNodes::new(true, true),
@@ -689,11 +728,11 @@ impl DHTManager {
         match event {
             FoundNode(addrs) => {
                 debug!("Received DHT node {addrs:?}");
-                for addr in &addrs {
+                for addr in addrs {
                     let _ = self
                         .dht
                         .query(
-                            &addr,
+                            addr,
                             Query::FindNode {
                                 target: self.id,
                                 want_nodes: WantNodes::new(true, true),
@@ -704,16 +743,17 @@ impl DHTManager {
             }
             InfoHashRequest(info_hash, tx) => {
                 debug!("Received info hash request {info_hash}");
-                self.info_hashes
-                    .insert(info_hash, InfoHashKnowledge::new(tx));
+                self.info_hashes.insert(info_hash, InfoHashEntry::new(tx));
                 for addr in self
-                    .routing_table
-                    .get_closest_addrs(&info_hash, DesiredAddr::V4, 8)
+                    .routing_table_4
+                    .get_closest_addrs(&info_hash, 8)
+                    .into_iter()
+                    .map(SocketAddr::V4)
                 {
                     let _ = self
                         .dht
                         .query(
-                            &addr,
+                            addr,
                             Query::GetPeers {
                                 info_hash,
                                 want_nodes: WantNodes::new(true, false),
@@ -722,13 +762,15 @@ impl DHTManager {
                         .await;
                 }
                 for addr in self
-                    .routing_table
-                    .get_closest_addrs(&info_hash, DesiredAddr::V6, 8)
+                    .routing_table_6
+                    .get_closest_addrs(&info_hash, 8)
+                    .into_iter()
+                    .map(SocketAddr::V6)
                 {
                     let _ = self
                         .dht
                         .query(
-                            &addr,
+                            addr,
                             Query::GetPeers {
                                 info_hash,
                                 want_nodes: WantNodes::new(false, true),

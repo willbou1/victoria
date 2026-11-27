@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::{collections::HashMap, net::{SocketAddr, SocketAddrV4, SocketAddrV6}};
+use std::{collections::HashMap, net::SocketAddr};
 
 use bencodedit::{BencodeValue, accessor::BencodeAccessor};
 

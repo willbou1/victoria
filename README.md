@@ -35,7 +35,7 @@ while being pleasant on the eyes.
 | Bootstrapping | ✅ |
 | Peer discovery | ✅ |
 | Maintenance | ❌ |
-| Contributing | ❌ |
+| Contributing | ✅ |
 
 # Usage
 Launch the TUI:

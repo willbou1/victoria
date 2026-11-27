@@ -1,4 +1,4 @@
-use super::theme::{Theme, HistogramTheme};
+use super::theme::HistogramTheme;
 
 pub struct Histogram {
     height: usize,
@@ -67,6 +67,7 @@ impl Histogram {
         rendered.extend(std::iter::repeat_n(' ', scale_width - 3));
         rendered.push_str(" ╰");
         rendered.extend(std::iter::repeat_n('─', taken.saturating_sub(2)));
+        rendered.push_str("\r\n");
 
         rendered
     }
